@@ -36,13 +36,16 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 .pytest_cache/
+*.egg-info/
 
 # Editor files
 *.swp
 *~
 
 # Claude Code
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/skills/**
 
 # Codex
 .codex/
