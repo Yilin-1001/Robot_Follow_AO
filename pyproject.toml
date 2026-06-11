@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robot-follow"
+version = "0.1.0"
+description = "ALX-G100 to Unitree G1 low-speed follow MVP"
+requires-python = ">=3.8"
+dependencies = [
+  "pyserial>=3.5",
+  "numpy>=1.23",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+]
+
+[project.scripts]
+robot-follow = "robot_follow.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

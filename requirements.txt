@@ -1,0 +1,12 @@
+# Core runtime dependencies
+pyserial>=3.5
+numpy>=1.23
+
+# Unitree G1 SDK dependency
+cyclonedds==0.10.2
+
+# Development and test dependencies
+pytest>=7.0
+
+# Install the Unitree Python SDK separately when doing G1 hardware integration:
+# pip install git+https://github.com/unitreerobotics/unitree_sdk2_python.git
