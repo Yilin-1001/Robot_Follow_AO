@@ -19,13 +19,13 @@ class FollowConfig:
     hold_tolerance_m: float = 0.15
     max_forward_vx: float = 0.20
     max_backward_vx: float = 0.12
-    max_follow_distance_m: float = 3.0
-    max_omega: float = 0.30       # rad/s
-    angle_deadzone_deg: float = 5.0
+    max_follow_distance_m: float = 4.0
+    max_omega: float = 0.60       # rad/s
+    angle_deadzone_deg: float = 7.0
     large_angle_deg: float = 20.0
     distance_gain_forward: float = 0.18
     distance_gain_backward: float = 0.15
-    angle_gain: float = 0.015     # omega = gain * azimuth_rad
+    angle_gain: float = 0.5      # omega = gain * azimuth_rad
 
     @property
     def hold_min_distance_m(self) -> float:

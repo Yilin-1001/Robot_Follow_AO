@@ -330,11 +330,26 @@ def test_distance_at_minimum_safe_boundary_can_reverse():
     assert result.command.reason == "tracking_backward"
 
 
-def test_far_target_stops_instead_of_chasing():
+def test_far_but_trackable_target_keeps_following():
     pipe = FollowPipeline(clock=lambda: 100.0)
     result = pipe.process(TargetSample(
         timestamp=100.0,
-        distance_m=3.1,
+        distance_m=3.5,
+        azimuth_deg=0.0,
+        valid=True,
+    ))
+
+    assert result.command.kind == "move"
+    assert result.command.reason == "tracking_forward"
+    assert result.command.vx > 0.0
+    assert result.follow is not None
+
+
+def test_very_far_target_stops_instead_of_chasing():
+    pipe = FollowPipeline(clock=lambda: 100.0)
+    result = pipe.process(TargetSample(
+        timestamp=100.0,
+        distance_m=4.1,
         azimuth_deg=0.0,
         valid=True,
     ))

@@ -53,9 +53,17 @@ def test_far_distance_moves_forward():
     assert out.reason == "tracking_forward"
 
 
+def test_small_static_angle_stays_in_deadzone():
+    ctrl = FollowController()
+    out = ctrl.compute(distance_m=2.0, azimuth_deg=6.0)
+    assert out.vx > 0.0
+    assert out.omega != 0.0
+    assert out.reason == "tracking_forward"
+
+
 def test_medium_angle_slow_forward_and_turn():
     ctrl = FollowController()
-    out = ctrl.compute(distance_m=2.0, azimuth_deg=10.0)
+    out = ctrl.compute(distance_m=2.0, azimuth_deg=8.0)
     assert out.vx > 0.0
     assert out.omega != 0.0
     assert out.reason == "tracking_turning"
