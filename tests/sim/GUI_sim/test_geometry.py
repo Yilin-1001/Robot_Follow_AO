@@ -76,6 +76,30 @@ class TestCoordinateTransforms:
         assert abs(wx) < 0.01
         assert abs(wy) < 0.01
 
+    def test_polar_to_world_dead_ahead(self):
+        geo = SimGeometry()
+        wx, wy = geo.polar_to_world(
+            robot_x=1.0,
+            robot_y=2.0,
+            heading_rad=0.0,
+            distance_m=1.5,
+            azimuth_deg=0.0,
+        )
+        assert wx == pytest.approx(2.5)
+        assert wy == pytest.approx(2.0)
+
+    def test_polar_to_world_respects_heading_and_azimuth(self):
+        geo = SimGeometry()
+        wx, wy = geo.polar_to_world(
+            robot_x=0.0,
+            robot_y=0.0,
+            heading_rad=math.radians(90.0),
+            distance_m=2.0,
+            azimuth_deg=-90.0,
+        )
+        assert wx == pytest.approx(2.0)
+        assert wy == pytest.approx(0.0, abs=1e-12)
+
 
 # ---------------------------------------------------------------------------
 # Azimuth, distance, FOV

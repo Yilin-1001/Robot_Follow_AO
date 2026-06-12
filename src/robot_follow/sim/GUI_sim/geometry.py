@@ -96,6 +96,21 @@ class SimGeometry:
         y_m = (cy - py) / self.pixels_per_meter  # y flipped
         return x_m, y_m
 
+    def polar_to_world(
+        self,
+        robot_x: float,
+        robot_y: float,
+        heading_rad: float,
+        distance_m: float,
+        azimuth_deg: float,
+    ) -> Tuple[float, float]:
+        """Convert robot-relative polar target observation to world metres."""
+        angle = heading_rad + math.radians(azimuth_deg)
+        return (
+            robot_x + distance_m * math.cos(angle),
+            robot_y + distance_m * math.sin(angle),
+        )
+
     # ------------------------------------------------------------------
     # Detection
     # ------------------------------------------------------------------

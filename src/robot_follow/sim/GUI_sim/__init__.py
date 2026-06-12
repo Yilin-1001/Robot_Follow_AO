@@ -4,7 +4,9 @@
 core :class:`~robot_follow.core.FollowPipeline` at a fixed 40 Hz and drives a
 simulated robot point with the returned :class:`~robot_follow.core.MotionCommand`.
 
-It is NOT a robot control interface and never imports real-hardware modules.
+It is NOT a robot control interface. The optional live ALX mode consumes the
+real-layer ALX source, but the source implementation does not live in this
+package.
 """
 
 from robot_follow.sim.GUI_sim.geometry import (
