@@ -206,6 +206,16 @@ class FollowPipeline:
                 command=command,
             )
 
+        # Step 4b: target too far -> stop instead of chasing (MVP).
+        if filtered.distance_m > self._controller.config.max_follow_distance_m:
+            command = _stop_command("target_too_far")
+            return PipelineStepResult(
+                sample=sample,
+                filtered=filtered,
+                verdict=verdict,
+                command=command,
+            )
+
         # Step 5: safe -> controller -> move.
         output = self._controller.compute(
             filtered.distance_m, filtered.azimuth_deg
