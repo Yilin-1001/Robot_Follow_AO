@@ -14,14 +14,26 @@ from dataclasses import dataclass
 class FollowConfig:
     """Tunable parameters for the follow controller."""
 
-    target_distance_m: float = 1.3
-    min_safe_distance_m: float = 0.75
-    max_vx: float = 0.20          # m/s
+    target_distance_m: float = 1.5
+    min_safe_distance_m: float = 0.5
+    hold_tolerance_m: float = 0.15
+    max_forward_vx: float = 0.20
+    max_backward_vx: float = 0.12
+    max_follow_distance_m: float = 3.0
     max_omega: float = 0.30       # rad/s
     angle_deadzone_deg: float = 5.0
     large_angle_deg: float = 20.0
-    distance_gain: float = 0.18   # vx = gain * distance_error
+    distance_gain_forward: float = 0.18
+    distance_gain_backward: float = 0.15
     angle_gain: float = 0.015     # omega = gain * azimuth_rad
+
+    @property
+    def hold_min_distance_m(self) -> float:
+        return self.target_distance_m - self.hold_tolerance_m
+
+    @property
+    def hold_max_distance_m(self) -> float:
+        return self.target_distance_m + self.hold_tolerance_m
 
 
 @dataclass(frozen=True)
@@ -82,30 +94,45 @@ class FollowController:
             omega = self._clamp_omega(
                 cfg.angle_gain * math.radians(az)
             )
-            dist_err = dist - cfg.target_distance_m
-            vx = max(0.0, self._clamp_vx(cfg.distance_gain * dist_err))
+            vx = self._distance_vx(dist)
             # Reduce forward speed proportional to misalignment
             vx *= 1.0 - (abs_az / cfg.large_angle_deg) * 0.6
             return FollowOutput(
                 vx=vx, vy=0.0, omega=omega, reason="tracking_turning"
             )
 
-        # --- Within deadzone: approach / hold distance -------------------
-        dist_err = dist - cfg.target_distance_m
-        vx = max(0.0, self._clamp_vx(cfg.distance_gain * dist_err))
+        # --- Within deadzone: hold distance (bidirectional) --------------
+        vx = self._distance_vx(dist)
         # Small residual turn correction inside deadzone
         omega = self._clamp_omega(
             cfg.angle_gain * math.radians(az) * 0.3
         )
-        if vx < 1e-4 and abs(omega) < 1e-4:
+        if vx < -1e-4:
+            reason = "tracking_backward"
+        elif vx > 1e-4:
+            reason = "tracking_forward"
+        elif abs(omega) < 1e-4:
             reason = "holding"
         else:
-            reason = "tracking_forward"
+            reason = "tracking_turning"
         return FollowOutput(vx=vx, vy=0.0, omega=omega, reason=reason)
 
     # ------------------------------------------------------------------
-    def _clamp_vx(self, vx: float) -> float:
-        return max(-self._config.max_vx, min(self._config.max_vx, vx))
+    def _distance_vx(self, distance_m: float) -> float:
+        cfg = self._config
+        if distance_m < cfg.hold_min_distance_m:
+            error = distance_m - cfg.hold_min_distance_m
+            return max(
+                -cfg.max_backward_vx,
+                cfg.distance_gain_backward * error,
+            )
+        if distance_m > cfg.hold_max_distance_m:
+            error = distance_m - cfg.hold_max_distance_m
+            return min(
+                cfg.max_forward_vx,
+                cfg.distance_gain_forward * error,
+            )
+        return 0.0
 
     def _clamp_omega(self, omega: float) -> float:
         return max(-self._config.max_omega, min(self._config.max_omega, omega))
