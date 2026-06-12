@@ -232,6 +232,16 @@ ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
 dmesg 中能看到 USB 串口设备接入信息
 ```
 
+如果 `lsusb` 能看到 `1a86:7523 QinHeng Electronics CH340 serial converter`，
+但没有出现 `/dev/ttyUSB0`，优先参考：
+
+```text
+docs/alx_ch340_usb_setup.md
+```
+
+该问题常见原因是 Ubuntu/Jetson 上的 `brltty-udev.service` 抢占 CH340，
+导致接口绑定到 `usbfs` 而不是 `ch341`。
+
 记录实际串口：
 
 ```text
@@ -558,19 +568,20 @@ distance 趋势正确
 
 ```bash
 cd ~/Robot_Follow
-robot-follow --serial-port /dev/ttyUSB0 --net-iface <G1_NET_IFACE> --dry-run
+conda run -n robot-follow python -m robot_follow.main --port /dev/ttyUSB0 --duration 10
 ```
 
 示例：
 
 ```bash
-robot-follow --serial-port /dev/ttyUSB0 --net-iface enp2s0 --dry-run
+conda run -n robot-follow python -m robot_follow.main --port /dev/ttyUSB0 --frames 400 --csv logs/alx_dry_run.csv
 ```
 
 预期输出：
 
 ```text
-distance=1.50m azimuth=8.0deg vx=0.10 omega=0.16 reason=tracking_turning
+frame=00000 t=  0.000s status=live alx_fps= 40.0 age=   5.0ms d= 1.50m az=   8.0deg xy=(+1.49,+0.21)m valid=True cmd=move/tracking_turning vx=+0.000 omega=+0.0698
+summary frames=400 moves=... stops=... last=...
 ```
 
 测试动作和预期：
@@ -706,8 +717,11 @@ Jetson SSH 终端可用
 
 ```bash
 cd ~/Robot_Follow
-robot-follow --serial-port /dev/ttyUSB0 --net-iface <G1_NET_IFACE>
+当前代码尚未提供真实 G1 闭环运动入口。
 ```
+
+本阶段需要等 G1 motion bridge 接入后再执行。不要把第 9 节的
+headless dry-run 命令当成真实机器人闭环控制命令。
 
 ### 11.3 闭环动作测试
 
