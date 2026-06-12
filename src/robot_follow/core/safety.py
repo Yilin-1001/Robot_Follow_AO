@@ -17,7 +17,7 @@ class SafetyConfig:
     """Thresholds used by the safety manager."""
 
     data_timeout_s: float = 0.5
-    min_safe_distance_m: float = 0.75
+    min_safe_distance_m: float = 0.5
     max_distance_jump_m: float = 0.5
     max_angle_jump_deg: float = 45.0
 

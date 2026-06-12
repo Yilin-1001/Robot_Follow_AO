@@ -37,9 +37,28 @@ def test_normal_is_safe():
     assert v.reason == "ok"
 
 
-def test_too_close():
-    mgr = SafetyManager()
-    v = mgr.check(_make_input(distance_m=0.6))
+def test_distance_at_minimum_safe_boundary_is_safe():
+    mgr = SafetyManager(clock=lambda: 100.0)
+    v = mgr.check(SafetyInput(
+        timestamp=100.0,
+        distance_m=0.5,
+        azimuth_deg=0.0,
+        distance_jump=0.0,
+        angle_jump=0.0,
+    ))
+    assert v.safe
+    assert v.reason == "ok"
+
+
+def test_below_minimum_safe_distance_is_too_close():
+    mgr = SafetyManager(clock=lambda: 100.0)
+    v = mgr.check(SafetyInput(
+        timestamp=100.0,
+        distance_m=0.49,
+        azimuth_deg=0.0,
+        distance_jump=0.0,
+        angle_jump=0.0,
+    ))
     assert not v.safe
     assert v.reason == "too_close"
 
