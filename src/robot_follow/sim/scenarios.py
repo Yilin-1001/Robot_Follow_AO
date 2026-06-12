@@ -77,20 +77,23 @@ def _angle_alignment() -> list[TargetSample]:
 
 
 def _too_close() -> list[TargetSample]:
-    """Gradual approach from 1.2m down to 0.48m with small steps (~0.08m).
+    """Gradual approach from 1.2m down to 0.4m, then plateau at 0.4m.
 
-    The steps are small enough to avoid triggering distance_jump (>0.5m),
-    but the filtered distance eventually drops below min_safe_distance
-    (0.75m), causing a "too_close" stop.
+    Small steps (~0.08m) avoid triggering distance_jump (>0.5m).
+    The plateau lets the EMA filter converge below min_safe_distance
+    (0.5m), causing a "too_close" stop.
     """
     start = 1.2
-    end = 0.48
+    end = 0.4
     step = 0.08
     distances: list[float] = []
     d = start
     while d >= end:
         distances.append(round(d, 3))
         d -= step
+    # Plateau at the lowest distance to let the filter converge below 0.5m
+    for _ in range(8):
+        distances.append(end)
     samples: list[TargetSample] = []
     for i, dval in enumerate(distances):
         samples.append(
