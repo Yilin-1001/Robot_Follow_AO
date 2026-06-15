@@ -19,6 +19,7 @@ dev = [
 
 [project.scripts]
 robot-follow = "robot_follow.main:main"
+robot-follow-log = "robot_follow.run_logger:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

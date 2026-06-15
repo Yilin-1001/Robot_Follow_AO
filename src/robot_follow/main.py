@@ -14,9 +14,18 @@ import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Optional, TextIO
+from typing import Any, Callable, Iterable, Optional, TextIO
 
-from robot_follow.core import FollowPipeline, MotionCommand, TargetSample
+from robot_follow.core import (
+    FollowConfig,
+    FollowController,
+    FollowPipeline,
+    MotionCommand,
+    SafetyConfig,
+    SafetyManager,
+    TargetFilter,
+    TargetSample,
+)
 from robot_follow.core.pipeline import PipelineStepResult
 from robot_follow.ports import MotionBridge
 from robot_follow.real.alx_source import ALXLiveSource, ALXSnapshot
@@ -27,6 +36,8 @@ Sleeper = Callable[[float], None]
 Emitter = Callable[[str], None]
 
 logger = logging.getLogger(__name__)
+
+ConfigMapping = dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -76,6 +87,199 @@ class LiveALXRunResult:
     @property
     def last(self) -> Optional[MotionCommand]:
         return self.bridge.last if isinstance(self.bridge, MockMotionBridge) else None
+
+
+def load_yaml_config(path: Path) -> ConfigMapping:
+    """Load a project YAML config file.
+
+    PyYAML is used when installed. The fallback parser intentionally supports
+    the simple nested key/value YAML shape used by ``configs/*.yaml`` so Jetson
+    tests do not require an extra dependency just to tune parameters.
+    """
+    text = path.read_text(encoding="utf-8")
+    try:
+        import yaml  # type: ignore
+    except ModuleNotFoundError:
+        return _parse_simple_yaml(text)
+
+    loaded = yaml.safe_load(text)
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"config root must be a mapping: {path}")
+    return loaded
+
+
+def _parse_simple_yaml(text: str) -> ConfigMapping:
+    """Parse the small YAML subset used by project config files.
+
+    Supported shape:
+
+    section:
+      key: scalar
+
+    Scalars support strings, ints, floats, booleans, and null. Lists and inline
+    maps are deliberately rejected by leaving them as strings; the runtime
+    config only consumes scalar values.
+    """
+    root: ConfigMapping = {}
+    stack: list[tuple[int, ConfigMapping]] = [(-1, root)]
+    for lineno, raw_line in enumerate(text.splitlines(), start=1):
+        line_without_comment = raw_line.split("#", 1)[0].rstrip()
+        if not line_without_comment.strip():
+            continue
+        stripped = line_without_comment.lstrip(" ")
+        indent = len(line_without_comment) - len(stripped)
+        if "\t" in raw_line[:indent]:
+            raise ValueError(f"tabs are not supported in config line {lineno}")
+        if ":" not in stripped:
+            raise ValueError(f"expected key/value in config line {lineno}: {raw_line}")
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"empty key in config line {lineno}")
+
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        parent = stack[-1][1]
+        value = value.strip()
+        if not value:
+            child: ConfigMapping = {}
+            parent[key] = child
+            stack.append((indent, child))
+        else:
+            parent[key] = _parse_yaml_scalar(value)
+    return root
+
+
+def _parse_yaml_scalar(value: str) -> object:
+    value = value.strip()
+    lower = value.lower()
+    if lower in {"null", "none", "~"}:
+        return None
+    if lower in {"true", "false"}:
+        return lower == "true"
+    if (value.startswith('"') and value.endswith('"')) or (
+        value.startswith("'") and value.endswith("'")
+    ):
+        return value[1:-1]
+    try:
+        if any(ch in value for ch in (".", "e", "E")):
+            return float(value)
+        return int(value)
+    except ValueError:
+        return value
+
+
+def _config_section(config: ConfigMapping, section: str) -> ConfigMapping:
+    value = config.get(section, {})
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"config section '{section}' must be a mapping")
+    return value
+
+
+def _resolve_value(
+    cli_value: object,
+    config: ConfigMapping,
+    section: str,
+    keys: tuple[str, ...],
+    default: object,
+) -> object:
+    if cli_value is not None:
+        return cli_value
+    section_mapping = _config_section(config, section)
+    for key in keys:
+        if key in section_mapping:
+            return section_mapping[key]
+    return default
+
+
+def _dataclass_kwargs(config: ConfigMapping, section: str, cls: type) -> dict[str, object]:
+    section_mapping = _config_section(config, section)
+    allowed = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
+    unknown = sorted(set(section_mapping) - allowed)
+    if unknown:
+        raise ValueError(
+            f"unknown keys in config section '{section}': {', '.join(unknown)}"
+        )
+    return {key: section_mapping[key] for key in section_mapping}
+
+
+def _resolve_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
+    config = load_yaml_config(args.config) if args.config is not None else {}
+    if not isinstance(config, dict):
+        raise ValueError("config root must be a mapping")
+
+    resolved = argparse.Namespace(**vars(args))
+    resolved._config = config
+    resolved.port = str(_resolve_value(args.port, config, "alx", ("port",), "/dev/ttyUSB0"))
+    resolved.baudrate = int(_resolve_value(args.baudrate, config, "alx", ("baudrate",), 115200))
+    resolved.hz = float(_resolve_value(args.hz, config, "alx", ("hz",), 40.0))
+    resolved.stale_timeout = float(
+        _resolve_value(args.stale_timeout, config, "alx", ("stale_timeout_s", "stale_timeout"), 0.5)
+    )
+    resolved.duration = _optional_float(
+        _resolve_value(args.duration, config, "run", ("duration_s", "duration"), None)
+    )
+    resolved.frames = _optional_int(
+        _resolve_value(args.frames, config, "run", ("frame_limit", "frames"), None)
+    )
+    resolved.print_every = float(
+        _resolve_value(args.print_every, config, "run", ("print_every_s", "print_every"), 0.5)
+    )
+    csv_path = _resolve_value(args.csv, config, "run", ("csv_path", "csv"), None)
+    resolved.csv = Path(csv_path) if csv_path is not None else None
+
+    resolved.net_iface = str(
+        _resolve_value(args.net_iface, config, "g1", ("net_iface", "network_interface"), "enp2s0")
+    )
+    resolved.max_vx = _optional_float(
+        _resolve_value(args.max_vx, config, "g1", ("max_vx", "max_abs_vx"), None)
+    )
+    resolved.max_omega = _optional_float(
+        _resolve_value(args.max_omega, config, "g1", ("max_omega", "max_abs_omega"), None)
+    )
+    resolved.yaw_sign = int(_resolve_value(args.yaw_sign, config, "g1", ("yaw_sign",), 1))
+    return resolved
+
+
+def _optional_float(value: object) -> Optional[float]:
+    return None if value is None else float(value)
+
+
+def _optional_int(value: object) -> Optional[int]:
+    return None if value is None else int(value)
+
+
+def create_live_alx_config(args: argparse.Namespace) -> LiveALXConfig:
+    """Build the live runner config from resolved CLI/config values."""
+    return LiveALXConfig(
+        port=args.port,
+        baudrate=args.baudrate,
+        hz=args.hz,
+        stale_timeout_s=args.stale_timeout,
+        duration_s=args.duration,
+        frame_limit=args.frames,
+        print_every_s=args.print_every,
+        csv_path=args.csv,
+    )
+
+
+def create_follow_pipeline(args: argparse.Namespace) -> FollowPipeline:
+    """Create a FollowPipeline using optional YAML sections."""
+    config = getattr(args, "_config", {})
+    follow = FollowController(FollowConfig(**_dataclass_kwargs(config, "follow", FollowConfig)))
+    safety = SafetyManager(SafetyConfig(**_dataclass_kwargs(config, "safety", SafetyConfig)))
+    filter_cfg = _config_section(config, "filter")
+    unknown_filter_keys = sorted(set(filter_cfg) - {"alpha"})
+    if unknown_filter_keys:
+        raise ValueError(
+            f"unknown keys in config section 'filter': {', '.join(unknown_filter_keys)}"
+        )
+    target_filter = TargetFilter(alpha=float(filter_cfg.get("alpha", 0.35)))
+    return FollowPipeline(target_filter=target_filter, safety=safety, controller=follow)
 
 
 def target_xy_from_sample(sample: TargetSample) -> tuple[float, float]:
@@ -370,54 +574,49 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
             "or real robot output."
         )
     )
-    parser.add_argument("--port", default="/dev/ttyUSB0", help="ALX serial port.")
-    parser.add_argument("--baudrate", type=int, default=115200)
-    parser.add_argument("--hz", type=float, default=40.0, help="Pipeline rate.")
+    parser.add_argument("--config", type=Path, default=None,
+                        help="Optional YAML config file. Explicit CLI flags override it.")
+    parser.add_argument("--port", default=None, help="ALX serial port.")
+    parser.add_argument("--baudrate", type=int, default=None)
+    parser.add_argument("--hz", type=float, default=None, help="Pipeline rate.")
     parser.add_argument("--duration", type=float, default=None, help="Run seconds.")
     parser.add_argument("--frames", type=int, default=None, help="Run frame count.")
-    parser.add_argument("--stale-timeout", type=float, default=0.5)
-    parser.add_argument("--print-every", type=float, default=0.5)
+    parser.add_argument("--stale-timeout", type=float, default=None)
+    parser.add_argument("--print-every", type=float, default=None)
     parser.add_argument("--csv", type=Path, default=None, help="Optional CSV log path.")
 
-    # Motion output switches (G1 hardware safety gating). These are parsed and
-    # validated here; bridge selection via create_motion_bridge is wired in a
-    # later task. Without --enable-motion the runner must use MockMotionBridge
-    # (no real robot motion).
+    # Motion output switches (G1 hardware safety gating). Without
+    # --enable-motion the runner uses MockMotionBridge (no real robot motion).
     parser.add_argument("--dry-run", action="store_true", default=False,
                         help="Use MockMotionBridge (no real robot motion).")
     parser.add_argument("--enable-motion", action="store_true", default=False,
                         help="Enable G1MotionBridge (requires --i-understand-this-moves-robot).")
     parser.add_argument("--i-understand-this-moves-robot", action="store_true", default=False,
                         help="Explicit consent: the robot WILL physically move.")
-    parser.add_argument("--net-iface", default="enp2s0",
+    parser.add_argument("--net-iface", default=None,
                         help="DDS network interface for G1 SDK.")
     parser.add_argument("--max-vx", type=float, default=None,
                         help="Override max forward/backward velocity (m/s).")
     parser.add_argument("--max-omega", type=float, default=None,
                         help="Override max rotation velocity (rad/s).")
-    parser.add_argument("--yaw-sign", type=int, default=1, choices=[1, -1],
+    parser.add_argument("--yaw-sign", type=int, default=None, choices=[1, -1],
                         help="Yaw sign calibration (+1 or -1).")
 
     args = parser.parse_args(argv)
     if args.dry_run and args.enable_motion:
         parser.error("--dry-run and --enable-motion are mutually exclusive")
-    return args
+    try:
+        return _resolve_runtime_args(args)
+    except Exception as exc:
+        parser.error(str(exc))
 
 
 def main(argv: Optional[Iterable[str]] = None) -> None:
     args = _parse_args(argv)
-    config = LiveALXConfig(
-        port=args.port,
-        baudrate=args.baudrate,
-        hz=args.hz,
-        stale_timeout_s=args.stale_timeout,
-        duration_s=args.duration,
-        frame_limit=args.frames,
-        print_every_s=args.print_every,
-        csv_path=args.csv,
-    )
+    config = create_live_alx_config(args)
+    pipeline = create_follow_pipeline(args)
     bridge = create_motion_bridge(args)
-    run_live_alx_simulation(config, bridge=bridge)
+    run_live_alx_simulation(config, pipeline=pipeline, bridge=bridge)
 
 
 if __name__ == "__main__":

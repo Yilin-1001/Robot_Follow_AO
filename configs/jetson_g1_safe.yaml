@@ -1,0 +1,87 @@
+# Jetson + Unitree G1 现场测试保守参数。
+#
+# 使用方式：
+#   conda run -n robot-follow python -m robot_follow.main --config configs/jetson_g1_safe.yaml ...
+#
+# 注意：真实控制 G1 仍然必须在命令行显式加：
+#   --enable-motion --i-understand-this-moves-robot
+#
+# 调参原则：
+# - 第一轮保持低速、短时长。
+# - 先跑 ALX dry-run，再跑 G1 单项测试，最后才闭环。
+# - 现场优先改这个 YAML，不要直接改 Python 代码。
+
+# G1 运动输出配置。
+g1:
+  # Jetson 连接 G1 的 DDS 网卡名。用 `ip addr` 在 Jetson 上确认。
+  net_iface: enp2s0
+  # G1 前后方向速度上限，单位 m/s。第一轮真实闭环建议 <= 0.03。
+  max_vx: 0.03
+  # G1 旋转角速度上限，单位 rad/s。第一轮真实闭环建议 <= 0.10。
+  max_omega: 0.10
+  # 旋转方向符号校准。若目标在左侧但机器人向右转，改成 -1。
+  yaw_sign: 1
+
+# ALX-G100 串口输入配置。
+alx:
+  # ALX-G100 接收器串口设备。Jetson 上可能是 /dev/ttyUSB0 或 /dev/ttyUSB1。
+  port: /dev/ttyUSB0
+  # ALX-G100 串口波特率。当前协议按 115200 读取。
+  baudrate: 115200
+  # 数据超时时间，单位秒。超过该时间未收到新定位数据会触发停止。
+  stale_timeout_s: 0.5
+  # 主控制循环频率，单位 Hz。ALX 当前约 40Hz，默认匹配 40。
+  hz: 40.0
+
+# 单次运行配置。
+run:
+  # 单次测试时长，单位秒。真实闭环第一轮建议 10 秒。
+  duration_s: 10
+  # 终端打印间隔，单位秒。只影响输出频率，不影响控制频率。
+  print_every_s: 0.5
+  # 默认 CSV 路径。使用 run_logger 时会被自动生成的路径覆盖。
+  csv_path: logs/closed_loop_001.csv
+
+# ALX 目标数据滤波配置。
+filter:
+  # 一阶低通滤波系数，范围 (0, 1]。
+  # 越小越平滑但响应更慢；越大越灵敏但更容易抖。
+  alpha: 0.35
+
+# 安全停止阈值配置。
+safety:
+  # pipeline 判断数据超时的阈值，单位秒。
+  data_timeout_s: 0.5
+  # 最小安全距离，单位 m。小于该距离输出 stop/too_close。
+  min_safe_distance_m: 0.5
+  # 单帧距离跳变阈值，单位 m。超过会输出 stop/distance_jump。
+  max_distance_jump_m: 0.5
+  # 单帧角度跳变阈值，单位 deg。超过会输出 stop/angle_jump。
+  max_angle_jump_deg: 45.0
+
+# 跟随控制器参数。
+follow:
+  # 目标跟随距离，单位 m。机器人会尝试保持在该距离附近。
+  target_distance_m: 1.5
+  # 控制器内部的最小安全距离，单位 m。建议与 safety.min_safe_distance_m 保持一致。
+  min_safe_distance_m: 0.5
+  # 距离保持容忍带，单位 m。1.5 +/- 0.15m 内通常保持 holding。
+  hold_tolerance_m: 0.15
+  # 控制器输出的最大前进速度，单位 m/s。真实输出还会被 g1.max_vx 再次限幅。
+  max_forward_vx: 0.20
+  # 控制器输出的最大后退速度，单位 m/s。真实输出还会被 g1.max_vx 再次限幅。
+  max_backward_vx: 0.12
+  # 最大跟随距离，单位 m。目标超过该距离时停止而不是追赶。
+  max_follow_distance_m: 4.0
+  # 控制器输出的最大旋转角速度，单位 rad/s。真实输出还会被 g1.max_omega 再次限幅。
+  max_omega: 0.60
+  # 角度死区，单位 deg。小于该角度时主要按距离前后移动。
+  angle_deadzone_deg: 7.0
+  # 大角度阈值，单位 deg。超过该角度时优先原地转向，不前进。
+  large_angle_deg: 20.0
+  # 前进距离误差增益。目标太远时，距离误差乘以该值生成 vx。
+  distance_gain_forward: 0.18
+  # 后退距离误差增益。目标太近但未触发安全停止时，距离误差乘以该值生成负 vx。
+  distance_gain_backward: 0.15
+  # 角度误差增益。azimuth 转成弧度后乘以该值生成 omega。
+  angle_gain: 0.5

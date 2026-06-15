@@ -9,6 +9,9 @@ import pytest
 from robot_follow.real.alx_source import ALXSnapshot
 from robot_follow.main import (
     LiveALXConfig,
+    _parse_args,
+    create_follow_pipeline,
+    create_live_alx_config,
     run_live_alx_simulation,
     sample_from_snapshot,
     target_xy_from_sample,
@@ -180,3 +183,92 @@ def test_run_live_alx_simulation_writes_csv():
     assert "target_x_m,target_y_m" in output
     assert "move" in output
     assert "tracking_turning" in output
+
+
+def test_yaml_config_populates_runtime_and_pipeline(tmp_path):
+    config_path = tmp_path / "jetson.yaml"
+    config_path.write_text(
+        """
+alx:
+  port: /dev/ttyUSB7
+  baudrate: 57600
+  hz: 25
+  stale_timeout_s: 0.7
+run:
+  duration_s: 12
+  frame_limit: 3
+  print_every_s: 0.25
+  csv_path: logs/from_yaml.csv
+g1:
+  net_iface: eth9
+  max_vx: 0.04
+  max_omega: 0.11
+  yaw_sign: -1
+filter:
+  alpha: 0.5
+safety:
+  min_safe_distance_m: 0.8
+  max_distance_jump_m: 0.2
+follow:
+  target_distance_m: 1.8
+  max_forward_vx: 0.09
+  angle_deadzone_deg: 5.0
+""",
+        encoding="utf-8",
+    )
+
+    args = _parse_args(["--config", str(config_path)])
+    live_config = create_live_alx_config(args)
+    pipeline = create_follow_pipeline(args)
+
+    assert live_config.port == "/dev/ttyUSB7"
+    assert live_config.baudrate == 57600
+    assert live_config.hz == pytest.approx(25.0)
+    assert live_config.stale_timeout_s == pytest.approx(0.7)
+    assert live_config.duration_s == pytest.approx(12.0)
+    assert live_config.frame_limit == 3
+    assert live_config.print_every_s == pytest.approx(0.25)
+    assert str(live_config.csv_path) == "logs/from_yaml.csv"
+    assert args.net_iface == "eth9"
+    assert args.max_vx == pytest.approx(0.04)
+    assert args.max_omega == pytest.approx(0.11)
+    assert args.yaw_sign == -1
+    assert pipeline.filter.alpha == pytest.approx(0.5)
+    assert pipeline.safety.config.min_safe_distance_m == pytest.approx(0.8)
+    assert pipeline.safety.config.max_distance_jump_m == pytest.approx(0.2)
+    assert pipeline.controller.config.target_distance_m == pytest.approx(1.8)
+    assert pipeline.controller.config.max_forward_vx == pytest.approx(0.09)
+    assert pipeline.controller.config.angle_deadzone_deg == pytest.approx(5.0)
+
+
+def test_cli_flags_override_yaml_config(tmp_path):
+    config_path = tmp_path / "jetson.yaml"
+    config_path.write_text(
+        """
+alx:
+  port: /dev/ttyUSB7
+  hz: 25
+run:
+  duration_s: 12
+g1:
+  max_vx: 0.04
+  yaw_sign: -1
+""",
+        encoding="utf-8",
+    )
+
+    args = _parse_args([
+        "--config", str(config_path),
+        "--port", "/dev/ttyUSB9",
+        "--hz", "50",
+        "--duration", "2",
+        "--max-vx", "0.02",
+        "--yaw-sign", "1",
+    ])
+    live_config = create_live_alx_config(args)
+
+    assert live_config.port == "/dev/ttyUSB9"
+    assert live_config.hz == pytest.approx(50.0)
+    assert live_config.duration_s == pytest.approx(2.0)
+    assert args.max_vx == pytest.approx(0.02)
+    assert args.yaw_sign == 1
