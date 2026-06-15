@@ -17,12 +17,37 @@ from __future__ import annotations
 
 import argparse
 import logging
+import socket
 import time
 
 from robot_follow.core.types import MotionCommand
 from robot_follow.real.g1 import G1BridgeConfig, G1MotionBridge
 
 logger = logging.getLogger(__name__)
+
+
+def available_network_interfaces() -> list[str]:
+    """Return OS network interface names visible to this process."""
+    try:
+        return sorted(name for _, name in socket.if_nameindex())
+    except OSError as exc:
+        logger.warning("Unable to list network interfaces: %s", exc)
+        return []
+
+
+def validate_network_interface(net_iface: str) -> None:
+    """Fail before SDK init if the requested DDS interface is not present."""
+    interfaces = available_network_interfaces()
+    if not interfaces or net_iface in interfaces:
+        return
+
+    available = ", ".join(interfaces)
+    raise SystemExit(
+        f"--net-iface {net_iface!r} is not an available network interface. "
+        f"Available interfaces: {available}. "
+        "Run `ip -br link` on the robot PC and rerun with the interface "
+        "connected to the G1, for example `--net-iface eth0`."
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -68,6 +93,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     if not args.i_understand_this_moves_robot:
         raise SystemExit("--i-understand-this-moves-robot is required")
+
+    validate_network_interface(args.net_iface)
 
     cfg = G1BridgeConfig(max_abs_vx=args.max_vx, max_abs_omega=args.max_omega)
     bridge = G1MotionBridge(args.net_iface, config=cfg)
