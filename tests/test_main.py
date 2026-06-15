@@ -151,7 +151,12 @@ def test_run_live_alx_simulation_records_commands_and_stops_source():
     assert result.frames[0].target_x_m == pytest.approx(2.0)
     assert result.frames[0].target_y_m == pytest.approx(0.0)
     assert result.move_count == 2
-    assert result.stop_count == 0
+    # Task 7: the loop now stops the bridge in finally on shutdown, so a clean
+    # all-move run records exactly one stop -- the shutdown stop -- and it must
+    # be the last command in history (guarding against a coincidental count
+    # from the wrong source, e.g. a watchdog_timeout leaking in).
+    assert result.stop_count == 1
+    assert result.bridge.history[-1].reason == "shutdown"
     assert any(line.startswith("frame=") for line in lines)
     assert any(line.startswith("summary") for line in lines)
 

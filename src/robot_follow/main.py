@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Optional, TextIO
 
-from robot_follow.core import FollowPipeline, TargetSample
+from robot_follow.core import FollowPipeline, MotionCommand, TargetSample
 from robot_follow.core.pipeline import PipelineStepResult
 from robot_follow.ports import MotionBridge
 from robot_follow.real.alx_source import ALXLiveSource, ALXSnapshot
@@ -63,19 +63,19 @@ class LiveALXRunResult:
     """Summary of a headless live ALX simulation run."""
 
     frames: list[LiveALXFrame] = field(default_factory=list)
-    bridge: MockMotionBridge = field(default_factory=MockMotionBridge)
+    bridge: MotionBridge = field(default_factory=MockMotionBridge)
 
     @property
     def move_count(self) -> int:
-        return self.bridge.move_count
+        return self.bridge.move_count if isinstance(self.bridge, MockMotionBridge) else 0
 
     @property
     def stop_count(self) -> int:
-        return self.bridge.stop_count
+        return self.bridge.stop_count if isinstance(self.bridge, MockMotionBridge) else 0
 
     @property
-    def last(self):
-        return self.bridge.last
+    def last(self) -> Optional[MotionCommand]:
+        return self.bridge.last if isinstance(self.bridge, MockMotionBridge) else None
 
 
 def target_xy_from_sample(sample: TargetSample) -> tuple[float, float]:
@@ -222,7 +222,7 @@ def run_live_alx_simulation(
     *,
     source: Optional[ALXLiveSource] = None,
     pipeline: Optional[FollowPipeline] = None,
-    bridge: Optional[MockMotionBridge] = None,
+    bridge: Optional[MotionBridge] = None,
     emit: Emitter = print,
     clock: Clock = time.monotonic,
     sleep: Sleeper = time.sleep,
@@ -264,8 +264,9 @@ def run_live_alx_simulation(
     next_due_s = start_s
     last_print_s = -math.inf
 
-    source.start()
     try:
+        bridge.init()
+        source.start()
         frame_index = 0
         while True:
             now = clock()
@@ -282,8 +283,13 @@ def run_live_alx_simulation(
                 stale_timeout_s=config.stale_timeout_s,
             )
             target_x_m, target_y_m = target_xy_from_sample(sample)
-            step = pipeline.process(sample, serial_error=serial_error)
+            step = pipeline.process(
+                sample,
+                serial_error=serial_error,
+                sdk_error=bridge.sdk_error,
+            )
             bridge.dispatch(step.command)
+            bridge.tick(now)
 
             frame = LiveALXFrame(
                 index=frame_index,
@@ -314,6 +320,14 @@ def run_live_alx_simulation(
     except KeyboardInterrupt:
         emit("Interrupted by user.")
     finally:
+        try:
+            bridge.stop("shutdown")
+        except Exception as e:
+            emit(f"bridge shutdown stop failed: {e}")
+        try:
+            bridge.close()
+        except Exception as e:
+            emit(f"bridge close failed: {e}")
         source.stop()
         if csv_handle is not None:
             csv_handle.close()
@@ -402,7 +416,8 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         print_every_s=args.print_every,
         csv_path=args.csv,
     )
-    run_live_alx_simulation(config)
+    bridge = create_motion_bridge(args)
+    run_live_alx_simulation(config, bridge=bridge)
 
 
 if __name__ == "__main__":
