@@ -146,3 +146,27 @@ class TestMockMotionBridgeMultiple:
         assert bridge.move_count == 5
         assert bridge.stop_count == 3
         assert len(bridge.history) == 8
+
+
+class TestMockMotionBridgeProtocol:
+    def test_init_is_noop(self):
+        bridge = MockMotionBridge()
+        bridge.init()  # must not raise
+        assert bridge.move_count == 0
+
+    def test_tick_is_noop(self):
+        import time
+        bridge = MockMotionBridge()
+        bridge.tick(time.monotonic())  # must not raise
+
+    def test_close_is_noop_and_preserves_history(self):
+        bridge = MockMotionBridge()
+        bridge.dispatch(_move())
+        bridge.close()
+        assert bridge.move_count == 1  # close does not clear history
+
+    def test_sdk_error_always_false(self):
+        bridge = MockMotionBridge()
+        assert bridge.sdk_error is False
+        bridge.dispatch(_move())
+        assert bridge.sdk_error is False

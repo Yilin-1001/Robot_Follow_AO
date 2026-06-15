@@ -74,6 +74,26 @@ class MockMotionBridge:
             self.stop(command)
 
     # -----------------------------------------------------------------------
+    # MotionBridge protocol (no-op for simulation)
+    # -----------------------------------------------------------------------
+    @property
+    def sdk_error(self) -> bool:
+        """Mock bridges never report SDK errors."""
+        return False
+
+    def init(self) -> None:
+        """No-op: a mock bridge needs no initialization."""
+        return None
+
+    def tick(self, now: float | None = None) -> None:
+        """No-op: a mock bridge has no watchdog."""
+        return None
+
+    def close(self) -> None:
+        """No-op: a mock bridge has nothing to clean up (history preserved)."""
+        return None
+
+    # -----------------------------------------------------------------------
     # Convenience properties for tests
     # -----------------------------------------------------------------------
     @property

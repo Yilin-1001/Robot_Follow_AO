@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement a thin but conservative hardware output adapter that converts internal `MotionCommand` to Unitree G1 `LocoClient.Move/StopMove` calls, with delayed import, velocity clamping, yaw sign calibration, watchdog timeout, exception feedback, return-code checking, and explicit motion confirmation switches.
+**Goal:** Implement a thin but conservative hardware output adapter that converts internal `MotionCommand` to Unitree G1 `LocoClient.SetVelocity` calls (the `Move`/`StopMove` wrappers discard the SDK return code, so the bridge calls `SetVelocity` directly — see "Divergence: Option A"), with delayed import, velocity clamping, yaw sign calibration, watchdog timeout, exception feedback, return-code checking, and explicit motion confirmation switches.
 
 **Architecture:** Keep the existing core pipeline untouched. `G1MotionBridge` sits at the output edge, receiving `MotionCommand` from `FollowPipeline`. It performs final defensive checks (NaN/inf, velocity limits, state validation, SDK return code) before calling SDK. The bridge does NOT implement ALX parsing, filtering, safety decisions, or follow control algorithms—those remain in `SafetyManager` and `FollowController`.
 
@@ -15,7 +15,7 @@ Power on → wait ~1 min → zero-torque state
   → press R2+A (remote)        → motion state → G1 adjusts gait → STANDS UP
 ```
 
-Only after G1 is standing in motion state can the bridge call `Move`/`StopMove`. The bridge must **NOT** perform FSM transitions itself (no `Damp`/`Start`/`Squat2StandUp` on the hot path — these are dangerous to call blindly). The bridge's responsibility is: assume the operator has prepared the robot; if a `Move` call fails (non-zero return code, e.g. because the robot is not in motion state), treat it as `sdk_error` and report it so the pipeline stops.
+Only after G1 is standing in motion state can the bridge send velocity commands (it calls `SetVelocity` directly — Option A — which is what `Move`/`StopMove` wrap internally). The bridge must **NOT** perform FSM transitions itself (no `Damp`/`Start`/`Squat2StandUp` on the hot path — these are dangerous to call blindly). The bridge's responsibility is: assume the operator has prepared the robot; if a `SetVelocity` call fails (non-zero return code, e.g. because the robot is not in motion state), treat it as `sdk_error` and report it so the pipeline stops.
 
 **Debug mode:** During SDK development, press L2+R2 on the remote to enter debug mode, which stops the built-in motion control program and avoids command conflicts.
 
@@ -39,6 +39,16 @@ This plan follows the design document at [docs/g1_command_bridge_design.md](docs
 > doc also references a CLI entry point that does not match the codebase; this plan
 > targets the existing `src/robot_follow/main.py` package entry point
 > (`robot_follow.main:main`).
+
+> **Divergence: Option A (SetVelocity hot path).** Task 0 Step 5's original claim that
+> "all SDK methods return a code" is **wrong**. Only `SetVelocity` returns a code;
+> `Move`/`StopMove` are wrappers that call `SetVelocity` and **discard** its code
+> (return `None`), so the bridge would never detect "G1 not in motion state" / timeout
+> failures if it used `Move`/`StopMove`. The bridge therefore calls `SetVelocity`
+> **directly** on the hot path (`move -> SetVelocity(vx,0,omega,1.0)`,
+> `stop -> SetVelocity(0,0,0,1.0)`), byte-equivalent to the wrappers but exposing the
+> real code. This is a deliberate, user-approved decision; see Task 3 for the
+> implementation and the faithful `FakeLocoClient` that mirrors the real return contract.
 
 ## File Structure
 
@@ -125,16 +135,24 @@ Expected: prints the method list including `Move`, `StopMove`, `SetVelocity`, `I
 Confirmed API (from source `unitree_sdk2py/g1/loco/g1_loco_client.py`):
 
 ```text
-Init()                                       # registers RPC APIs; does NOT change robot FSM state
-SetTimeout(timeout: float)                   # set SDK call timeout
-Move(vx, vy, vyaw, continous_move=False)     # duration=1 by default, 864000 if continuous
-StopMove()                                   # equivalent to SetVelocity(0,0,0)
-SetVelocity(vx, vy, omega, duration=1.0)     # lower-level velocity with custom duration
+Init()                                       # registers RPC APIs LOCALLY (no network); returns None
+SetTimeout(timeout: float)                   # set SDK call timeout (ClientBase); returns None
+Move(vx, vy, vyaw, continous_move=False)     # wraps SetVelocity(duration=1 or 864000); returns None
+StopMove()                                   # wraps SetVelocity(0,0,0); returns None
+SetVelocity(vx, vy, omega, duration=1.0)     # the ONLY method that returns a `code`
 
-# All of the above return a `code` (0 = success, non-zero = failure; they do NOT raise).
-# Non-zero typically means G1 is not in motion state (e.g. still in zero-torque/damping,
-# or the operator has not finished the manual boot sequence). The bridge reports this
-# as sdk_error rather than retrying FSM transitions.
+# Return-value contract (CRITICAL — verified against source):
+#   SetVelocity RETURNS a `code` (0 = success, non-zero = failure; does NOT raise).
+#     Non-zero = RPC timeout / send error / api mismatch, OR the server status code,
+#     commonly "G1 not in motion state" (still zero-torque/damping, or the operator
+#     skipped the manual boot sequence).
+#   Move / StopMove / Init / SetTimeout all RETURN None. Move and StopMove are thin
+#     wrappers that call SetVelocity and DISCARD its code, so a non-zero failure is
+#     SILENTLY SWALLOWED when you call Move/StopMove. Init only registers APIs locally
+#     (no network), so its real failure mode is a Python exception, not a return code.
+#
+# IMPLICATION: the bridge calls SetVelocity DIRECTLY on the hot path (Option A) so it
+# can observe the code; see the "Divergence: Option A" note near the top and Task 3.
 
 # FSM methods exist but are NOT used by the bridge in the first release:
 #   ZeroTorque() -> FSM 0
@@ -244,7 +262,7 @@ This package provides the hardware output adapter for Unitree G1.
 It converts MotionCommand (from core.types) to LocoClient SDK calls.
 
 First-release scope:
-- High-level velocity control via LocoClient.Move/StopMove
+- High-level velocity control via LocoClient.SetVelocity (Move/StopMove wrappers discard the SDK return code — see Option A)
 - Defensive validation (NaN/inf, limits, state checks)
 - Watchdog timeout for automatic stop
 - Delayed SDK import for dry-run compatibility
@@ -343,7 +361,7 @@ class MotionBridge(Protocol):
         """Handle a stop command."""
         ...
 
-    def tick(self, now: float) -> None:
+    def tick(self, now: float | None = None) -> None:
         """Watchdog tick — call once per main-loop iteration."""
         ...
 
@@ -377,7 +395,7 @@ Add these members to `src/robot_follow/sim/mock_motion_bridge.py` (inside the cl
         """No-op: a mock bridge needs no initialization."""
         return None
 
-    def tick(self, now: float) -> None:
+    def tick(self, now: float | None = None) -> None:
         """No-op: a mock bridge has no watchdog."""
         return None
 
@@ -430,7 +448,7 @@ Expected: all existing tests plus the four new protocol tests pass.
 Run:
 
 ```bash
-git add src/robot_follow/core/types.py src/robot_follow/core/__init__.py \
+git add src/robot_follow/ports.py \
         src/robot_follow/sim/mock_motion_bridge.py tests/sim/test_mock_motion_bridge.py
 git commit -m "feat: add MotionBridge Protocol and extend MockMotionBridge for interchange"
 ```
@@ -442,7 +460,8 @@ git commit -m "feat: add MotionBridge Protocol and extend MockMotionBridge for i
 **Files:**
 - Create: `src/robot_follow/real/g1/bridge.py`
 - Update: `src/robot_follow/real/g1/__init__.py`
-- Create: `tests/real/g1/__init__.py`
+- Create: `tests/real/__init__.py` (package marker)
+- Create: `tests/real/g1/__init__.py` (OPTIONAL — see Step 1)
 - Create: `tests/real/g1/test_bridge.py`
 - Test: `tests/real/g1/test_bridge.py`
 
@@ -451,13 +470,39 @@ git commit -m "feat: add MotionBridge Protocol and extend MockMotionBridge for i
 > must match the Protocol signatures exactly so it is a drop-in replacement for
 > `MockMotionBridge` in `run_live_alx_simulation`.
 
+> **⚠️ IMPLEMENTED AS OPTION A — the code templates in Steps 2/3/5 below are the
+> ORIGINAL Option B drafts and are SUPERSEDED by the canonical files.** Read them for
+> intent only, not as copy-paste source. The actual implementation lives in
+> [src/robot_follow/real/g1/bridge.py](src/robot_follow/real/g1/bridge.py) and
+> [tests/real/g1/test_bridge.py](tests/real/g1/test_bridge.py) (21 passing tests).
+> Deviations from the templates below (all forced by the corrected SDK contract in
+> Task 0 Step 5):
+> 1. **Hot path calls `SetVelocity` directly**, not `Move`/`StopMove` (the wrappers
+>    discard the return code). `move -> SetVelocity(vx,0,omega,1.0)`,
+>    `stop -> SetVelocity(0,0,0,1.0)`.
+> 2. **`FakeLocoClient` is faithful**: `SetTimeout`/`Init`/`Move`/`StopMove` return
+>    `None`, only `SetVelocity` returns a code (the template's fake returned codes for
+>    Move/StopMove — a false-green). Failure injection: `fail_next`,
+>    `persistent_fail`, `init_fails`.
+> 3. **`init()` calls `SetTimeout`+`Init` on BOTH fake and real paths** (the template
+>    early-returned the fake path, contradicting its own `test_fake_client_init`), and
+>    does NOT error-check `Init()`'s return (real `Init` returns `None`); init failure
+>    is detected via the surrounding `try/except` → `RuntimeError`.
+> 4. **`_best_effort_set_zero_velocity` is REMOVED** — under Option A `stop()` is
+>    already `SetVelocity(0,0,0,1.0)`, so a second identical call is a pointless retry.
+> 5. **Tests assert on `set_velocity_calls`** (not the removed `fake.moves`/`fake.stops`);
+>    `test_init_return_code_nonzero` → `test_init_failure_raises_fatal_error`
+>    (exception-based); added `test_bridge_never_calls_move_or_stopmove_wrappers`.
+
 - [ ] **Step 1: Create test directory**
 
 Run:
 
 ```bash
 mkdir -p tests/real/g1
-touch tests/real/g1/__init__.py
+# tests/real/g1/__init__.py is OPTIONAL: pytest discovers test_bridge.py without it
+# (basename is unique). It was intentionally NOT created in the Option A run; the
+# package marker tests/real/__init__.py was created.
 ```
 
 - [ ] **Step 2: Create FakeLocoClient for testing**
@@ -481,23 +526,25 @@ from robot_follow.real.g1.bridge import G1MotionBridge
 class FakeLocoClient:
     """Fake LocoClient for testing without SDK.
 
-    Mimics the unitree_sdk2py.g1.loco.g1_loco_client.LocoClient interface.
-    IMPORTANT: like the real SDK, Move/StopMove/SetVelocity RETURN a `code`
-    (0 = success, non-zero = failure) instead of raising. Tests can force a
-    failure via `fail_next=True`.
+    NOTE: this is the ORIGINAL Option B template; the canonical, faithful fake
+    lives in tests/real/g1/test_bridge.py (see the "IMPLEMENTED AS OPTION A"
+    note at the top of Task 3). The faithful version has SetTimeout/Init/Move/
+    StopMove return None and only SetVelocity return a code — the text below
+    ("Move/StopMove/SetVelocity RETURN a code") is the FALSE-GREEN contract that
+    Option A corrected. Kept here for reference only.
     """
 
-    def __init__(self, fail_next: bool = False):
-        # NOTE: G1MotionBridge calls Move(vx, vy, vyaw) with only 3 positional
-        # args (it deliberately does NOT use continuous_move — see
-        # G1BridgeConfig docstring for the watchdog rationale). The 4th tuple
-        # slot below stays for FakeLocoClient.Move's default-arg path.
+    def __init__(self, fail_next: bool = False, fail_stopmove: bool = False):
+        # ORIGINAL template note: claimed the bridge calls Move(vx, vy, vyaw).
+        # Under Option A the bridge calls SetVelocity(vx, 0, omega, duration=1.0)
+        # directly, so this fake's Move/StopMove/stops are OBSOLETE.
         self.moves = []          # list of (vx, vy, vyaw, continuous=False)
         self.set_velocity_calls = []  # list of (vx, vy, omega, duration)
         self.stops = 0
         self.init_called = False
         self.timeout = None
         self.fail_next = fail_next  # if True, next call returns code 1
+        self.fail_stopmove = fail_stopmove  # if True, next StopMove returns code 1
 
     def _code(self) -> int:
         if self.fail_next:
@@ -510,6 +557,7 @@ class FakeLocoClient:
 
     def Init(self):
         self.init_called = True
+        return self._code()
 
     def SetVelocity(self, vx: float, vy: float, omega: float, duration: float = 1.0):
         self.set_velocity_calls.append((vx, vy, omega, duration))
@@ -526,6 +574,9 @@ class FakeLocoClient:
         # Real SDK: SetVelocity(0,0,0)
         self.set_velocity_calls.append((0.0, 0.0, 0.0, 1.0))
         self.stops += 1
+        if self.fail_stopmove:
+            self.fail_stopmove = False
+            return 1
         return self._code()
 ```
 
@@ -636,6 +687,9 @@ class G1MotionBridge:
             ChannelFactoryInitialize(0, self._network_interface)
             self._client = LocoClient()
             self._client.SetTimeout(self._config.sdk_timeout_s)
+            # Option A: Init() returns None on the real SDK (it only registers
+            # APIs locally, no network). Its return is NOT error-checked; init
+            # failure surfaces as an exception, caught below.
             self._client.Init()
             self._state = BridgeState.INITIALIZED
             logger.info(f"G1MotionBridge initialized on {self._network_interface}")
@@ -663,8 +717,9 @@ class G1MotionBridge:
         2. Validate command (kind, finite values)
         3. Clamp velocities to config limits
         4. Apply yaw_sign to omega
-        5. Call LocoClient.Move (continuous_move omitted -> SDK default
-           duration=1, so a crashed process holds the last velocity <=1s)
+        5. Call SetVelocity(vx, 0, omega, duration=1.0) — byte-equivalent to
+           Move(vx,0,omega) but returns the real code so failures are detected
+           (a crashed process holds the last velocity <=1s via duration=1).
         """
         if self._state in (BridgeState.CREATED, BridgeState.ERROR):
             # Refuse move; never crash the loop. Flag sdk_error so the next
@@ -683,41 +738,43 @@ class G1MotionBridge:
         )
 
         try:
-            code = self._client.Move(vx, vy, omega)
-            if code != 0:
-                self._record_error(f"G1 Move returned error code {code}")
+            # Option A: call SetVelocity directly (Move wraps it but discards
+            # the code). duration=1 matches the non-continuous Move wrapper.
+            code = self._client.SetVelocity(vx, vy, omega, duration=1.0)
+            if _is_error_code(code):
+                self._record_error(f"G1 SetVelocity returned error code {code}")
                 return
             self._state = BridgeState.ACTIVE
             self._last_dispatch_time = self._clock()
-            logger.debug(f"G1 Move: vx={vx:.3f} omega={omega:.3f}")
+            logger.debug(f"G1 move: vx={vx:.3f} omega={omega:.3f}")
         except Exception as e:
-            self._record_error(f"G1 Move failed: {e}")
+            self._record_error(f"G1 SetVelocity failed: {e}")
 
     def stop(self, reason: Union[str, MotionCommand] = "stop") -> None:
-        """Send a stop command.
+        """Send a stop command (zero velocity).
 
-        Always calls StopMove regardless of reason. This preserves the safety
-        semantics: stop commands must result in StopMove being called. Never
-        raises; a StopMove failure is recorded as sdk_error + ERROR state so the
-        control loop keeps running.
+        Option A: calls SetVelocity(0,0,0,1.0) (== StopMove()) so the return code
+        is observed. Never raises; a non-zero code is recorded as sdk_error +
+        ERROR state. A failed stop is NOT retried here (a retry would be
+        byte-identical to the call that just failed).
         """
         if self._client is None:
-            logger.warning("G1 StopMove called before init, ignoring")
+            logger.warning("G1 stop called before init, ignoring")
             return
         try:
-            code = self._client.StopMove()
-            if code != 0:
+            code = self._client.SetVelocity(0.0, 0.0, 0.0, duration=1.0)
+            if _is_error_code(code):
                 self._sdk_error = True
                 self._state = BridgeState.ERROR
-                logger.error(f"G1 StopMove returned error code {code}")
+                logger.error(f"G1 stop returned error code {code}")
                 return
             self._state = BridgeState.STOPPED
             self._last_dispatch_time = self._clock()
-            logger.info(f"G1 StopMove: reason={reason if isinstance(reason, str) else reason.reason}")
+            logger.info(f"G1 stop: reason={reason if isinstance(reason, str) else reason.reason}")
         except Exception as e:
             self._sdk_error = True
             self._state = BridgeState.ERROR
-            logger.error(f"G1 StopMove failed: {e}")
+            logger.error(f"G1 stop failed: {e}")
 
     def tick(self, now: float | None = None) -> None:
         """Watchdog tick - call StopMove if command timeout expired.
@@ -784,13 +841,24 @@ class G1MotionBridge:
         return True
 
     def _best_effort_stop(self) -> None:
-        """Attempt StopMove without raising on failure."""
+        """Attempt a zero-velocity SetVelocity without raising on failure.
+
+        Used from _record_error to physically halt the robot when an error is
+        detected mid-move. Does NOT touch sdk_error/state (caller already set
+        them). Option A: SetVelocity(0,0,0,1.0) == StopMove().
+        """
         if self._client is None:
             return
         try:
-            self._client.StopMove()
-        except Exception:
-            pass  # Suppress secondary failure
+            code = self._client.SetVelocity(0.0, 0.0, 0.0, duration=1.0)
+            if _is_error_code(code):
+                logger.error(f"best-effort stop returned error code {code}")
+        except Exception as e:
+            logger.error(f"best-effort stop failed: {e}")
+
+    # NOTE: _best_effort_set_zero_velocity() was REMOVED in Option A. Under
+    # Option A, stop()/best-effort stop are already SetVelocity(0,0,0,1.0), so a
+    # second identical zero-velocity call is a byte-identical, pointless retry.
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -801,6 +869,15 @@ def _clamp(value: float, lo: float, hi: float) -> float:
 def _is_finite(value: float) -> bool:
     """Check if value is finite (not NaN or inf)."""
     return math.isfinite(value)
+
+
+def _is_error_code(code: object) -> bool:
+    """Return True if an SDK return value represents failure.
+
+    Unitree SDK calls generally return 0 on success, but some methods may
+    return None in Python wrappers. Treat None as success and non-zero as error.
+    """
+    return code is not None and code != 0
 ```
 
 - [ ] **Step 4: Update __init__.py to export G1MotionBridge**
@@ -830,6 +907,16 @@ def test_fake_client_init():
     assert bridge.state == BridgeState.INITIALIZED
     assert fake.init_called
     assert fake.timeout == pytest.approx(10.0)
+
+
+def test_init_return_code_nonzero_raises_fatal_error():
+    """Init is pre-loop fatal: non-zero SDK code must stop startup."""
+    fake = FakeLocoClient(fail_next=True)
+    bridge = G1MotionBridge("eth0", fake_client=fake)
+    with pytest.raises(RuntimeError, match="Init returned error code"):
+        bridge.init()
+    assert bridge.sdk_error
+    assert bridge.state == BridgeState.ERROR
 
 
 def test_move_command_calls_move():
@@ -970,9 +1057,10 @@ def test_import_without_sdk():
 
 def test_move_sdk_return_code_nonzero_triggers_error():
     """SDK Move returns non-zero code (no exception); bridge records it."""
-    fake = FakeLocoClient(fail_next=True)
+    fake = FakeLocoClient()
     bridge = G1MotionBridge("eth0", fake_client=fake)
     bridge.init()
+    fake.fail_next = True
     bridge.move(MotionCommand(kind="move", vx=0.1, vy=0.0, omega=0.0, reason="test"))
     # Must NOT raise; records error so the loop stays alive
     assert bridge.sdk_error
@@ -982,20 +1070,39 @@ def test_move_sdk_return_code_nonzero_triggers_error():
 
 def test_stop_sdk_return_code_nonzero_triggers_error():
     """SDK StopMove returns non-zero code; bridge records it without raising."""
-    fake = FakeLocoClient(fail_next=True)
+    fake = FakeLocoClient()
     bridge = G1MotionBridge("eth0", fake_client=fake)
     bridge.init()
+    fake.fail_next = True
+    calls_before = len(fake.set_velocity_calls)
     bridge.stop("test")
     # Must NOT raise
     assert bridge.sdk_error
     assert bridge.state == BridgeState.ERROR
+    # StopMove itself records one SetVelocity call in the fake, then the bridge
+    # attempts an explicit zero-velocity fallback.
+    assert len(fake.set_velocity_calls) >= calls_before + 2
+
+
+def test_best_effort_stop_nonzero_falls_back_to_set_velocity():
+    """Move failure should attempt StopMove and then explicit zero velocity."""
+    fake = FakeLocoClient(fail_stopmove=True)
+    bridge = G1MotionBridge("eth0", fake_client=fake)
+    bridge.init()
+    fake.fail_next = True
+    bridge.move(MotionCommand(kind="move", vx=0.1, vy=0.0, omega=0.0, reason="test"))
+    assert bridge.sdk_error
+    assert bridge.state == BridgeState.ERROR
+    assert fake.stops >= 1
+    assert fake.set_velocity_calls[-1] == (0.0, 0.0, 0.0, 1.0)
 
 
 def test_close_is_best_effort_when_stop_fails():
     """close() must complete cleanup even if the underlying StopMove fails."""
-    fake = FakeLocoClient(fail_next=True)
+    fake = FakeLocoClient()
     bridge = G1MotionBridge("eth0", fake_client=fake)
     bridge.init()
+    fake.fail_next = True
     bridge.close()  # must not raise even though StopMove returns code 1
     assert bridge.state == BridgeState.CREATED  # cleanup ran
     # _client is reset to None so a second close() is safe too
@@ -1004,9 +1111,10 @@ def test_close_is_best_effort_when_stop_fails():
 
 def test_move_in_error_state_is_rejected_without_raising():
     """Once in ERROR, move() refuses to send but never raises."""
-    fake = FakeLocoClient(fail_next=True)
+    fake = FakeLocoClient()
     bridge = G1MotionBridge("eth0", fake_client=fake)
     bridge.init()
+    fake.fail_next = True
     bridge.move(MotionCommand(kind="move", vx=0.1, vy=0.0, omega=0.0, reason="first"))
     assert bridge.state == BridgeState.ERROR
     moves_before = len(fake.moves)
@@ -1254,10 +1362,10 @@ from robot_follow.real.g1 import G1MotionBridge
 
 class FakeLocoClient:
     def SetTimeout(self, t): pass
-    def Init(self): pass
-    def Move(self, vx, vy, vyaw, continuous=False): return 0
-    def SetVelocity(self, vx, vy, omega, duration=1.0): return 0
-    def StopMove(self): return 0
+    def Init(self): return None            # faithful: real Init returns None
+    def Move(self, vx, vy, vyaw, continuous=False): return None   # faithful: wrapper returns None
+    def SetVelocity(self, vx, vy, omega, duration=1.0): return 0  # only SetVelocity returns a code
+    def StopMove(self): return None        # faithful: wrapper returns None
 
 bridge = G1MotionBridge('eth0', fake_client=FakeLocoClient())
 bridge.init()
@@ -1400,7 +1508,9 @@ python -m robot_follow.real.g1.check \
 
 This sends a single short move command, then stops. It does not read ALX data.
 
-Expected: Robot moves slowly forward for <1s, then stops. Verify return code is 0 in logs.
+Expected: Robot moves slowly forward for <1s, then stops. On success the bridge
+logs the move at DEBUG and emits NO "error code" line — absence of an "error code"
+log means the SetVelocity call returned code 0.
 
 ## Stage 6: Continuous Move + Watchdog
 
@@ -1415,10 +1525,13 @@ Expected: Robot stops automatically after command timeout.
 
 ## Stage 7: SDK Error Code Test
 
-Two ways to trigger a non-zero SDK return code (remember: SDK calls do NOT raise — they return a code):
+Two ways to trigger a non-zero SDK return code (remember: only `SetVelocity`
+returns a code — the bridge calls it directly under Option A, so a non-zero code
+IS observable; `Move`/`StopMove` would have swallowed it):
 
-1. **G1 not in motion state**: skip Stage 0 (leave G1 in damping/zero-torque) and call Move.
-   The bridge should detect non-zero code and set sdk_error.
+1. **G1 not in motion state**: skip Stage 0 (leave G1 in damping/zero-torque), then
+   run a single bounded move. The bridge's `SetVelocity` call returns non-zero and
+   the bridge sets `sdk_error`.
 2. **Link loss**: disconnect Ethernet mid-run while G1 is in motion state.
 
 ```bash
@@ -1711,5 +1824,5 @@ After this plan is complete:
 6. **Yaw calibration**: Adjust `yaw_sign` based on actual rotation behavior (Stage 8).
 7. **Conservative defaults**: Use `max_abs_vx=0.05` for first real motion tests (Stage 5).
 8. **Safety**: Always have emergency stop ready during first closed-loop runs.
-9. **Return codes**: Watch for non-zero SDK return codes in logs — they indicate failures that do NOT raise Python exceptions. Common cause: G1 not in motion state (operator forgot Stage 0).
+9. **Return codes**: Watch for non-zero SDK return codes in logs — they indicate failures that do NOT raise Python exceptions. The bridge calls `SetVelocity` directly (Option A) precisely so these codes are visible; under `Move`/`StopMove` they would be silently swallowed. Common cause: G1 not in motion state (operator forgot Stage 0).
 10. **FSM states**: The bridge does NOT do FSM transitions. If G1 leaves standing state (e.g., after a fall), the operator must manually recover it via remote before the bridge can command motion again.
