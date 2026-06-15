@@ -265,34 +265,50 @@ yaw_sign = -1
 只有前面阶段全部通过后再执行。
 
 ```bash
-conda run -n robot-follow python -m robot_follow.main \
-  --port /dev/ttyUSB0 \
-  --net-iface enp2s0 \
+conda run -n robot-follow python -m robot_follow.run_logger \
+  --test-env jetson \
+  --test-type closed_loop_low_speed \
+  -- \
+  --config configs/jetson_g1_safe.yaml \
   --enable-motion \
-  --i-understand-this-moves-robot \
-  --max-vx 0.03 \
-  --max-omega 0.10 \
-  --duration 10 \
-  --csv logs/closed_loop_001.csv
+  --i-understand-this-moves-robot
 ```
 
 第一轮不要超过 10 秒。测试人员站在机器人正前方 1.5m 到 2.0m，安全员随时准备遥控器急停。
+日志会自动写入单次测试目录 `logs/runs/YYYYMMDD_HHMMSS_jetson_closed_loop_low_speed/`。
+如果需要单个归档文件，在 `run_logger` 命令上加 `--zip`。
 
 ## 7. Jetson 现场调参方法
 
-现场调参优先通过 CLI 或配置文件，不要直接改代码。
-
-第一批关键参数：
+现场调参优先修改 `configs/jetson_g1_safe.yaml`，不要直接改 Python 代码。
+真实运动仍必须在命令行显式传：
 
 ```text
---max-vx
---max-omega
---yaw-sign
---stale-timeout
---hz
+--enable-motion
+--i-understand-this-moves-robot
 ```
 
-建议后续增加配置文件，例如：
+命令行参数会覆盖 YAML，适合临时试一轮；确认有效后再写回 YAML。
+
+第一批常调参数：
+
+```text
+g1.max_vx
+g1.max_omega
+g1.yaw_sign
+alx.stale_timeout_s
+alx.hz
+follow.target_distance_m
+follow.hold_tolerance_m
+follow.angle_deadzone_deg
+follow.large_angle_deg
+follow.distance_gain_forward
+follow.angle_gain
+safety.min_safe_distance_m
+safety.max_distance_jump_m
+```
+
+配置文件示例：
 
 ```yaml
 # configs/jetson_g1_safe.yaml
@@ -313,6 +329,17 @@ follow:
   large_angle_deg: 20.0
 ```
 
+当前主程序支持读取以下配置段：
+
+```text
+g1
+alx
+run
+filter
+safety
+follow
+```
+
 现场每轮测试复制一份配置：
 
 ```bash
@@ -325,18 +352,14 @@ cp configs/jetson_g1_safe.yaml configs/runs/2026-06-12-test-001.yaml
 ```bash
 mkdir -p logs/runs/001
 conda run -n robot-follow python -m robot_follow.main \
-  --port /dev/ttyUSB0 \
-  --net-iface enp2s0 \
+  --config configs/runs/2026-06-12-test-001.yaml \
   --enable-motion \
   --i-understand-this-moves-robot \
-  --max-vx 0.03 \
-  --max-omega 0.10 \
-  --duration 10 \
   --csv logs/runs/001/closed_loop.csv \
   2>&1 | tee logs/runs/001/console.log
 ```
 
-如果暂时没有 `--config`，把实际命令写入日志目录：
+把实际命令写入日志目录，方便复盘：
 
 ```bash
 cat > logs/runs/001/command.txt <<'EOF'
@@ -570,9 +593,9 @@ ALX 暂时遮挡
    - 不读 ALX。
    - 不进入跟随闭环。
 
-2. 配置文件加载
-   - 让 Jetson 调参不需要改代码。
-   - 参数可以直接回传本地。
+2. 运行日志自动归档
+   - 自动生成 run 目录。
+   - 自动保存命令、配置快照、CSV、console log 和 summary。
    - 每轮测试可复现。
 
 完成这两个能力后，现场问题可以快速拆成 ALX、pipeline、G1 bridge 三段定位。

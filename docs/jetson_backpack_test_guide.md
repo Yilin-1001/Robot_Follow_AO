@@ -20,17 +20,17 @@
 已经具备:
   ALX-G100 协议解析代码
   ALX-G100 串口读取代码
-  协议解析单元测试
-
-尚未完整具备:
   距离/角度滤波
   安全急停管理
   跟随控制器
   G1 控制桥
   完整 robot-follow CLI
+  GUI / headless dry-run
+  G1 分阶段硬件检查入口
+  协议、core、GUI sim、G1 bridge 单元测试
 ```
 
-因此当前优先测试：
+因此当前优先按阶段测试：
 
 ```text
 Jetson 环境
@@ -39,14 +39,17 @@ ALX-G100 串口识别
 协议解析
 安装方向和坐标系
 数据稳定性
+headless dry-run
+G1 init / StopMove / 单次低速 Move
+ALX + G1 极低速闭环
 ```
 
-暂不直接测试：
+仍然不能直接跳过前置阶段测试：
 
 ```text
-G1 低速闭环跟随
-完整软件急停闭环
 客户演示
+高速跟随
+无人值守闭环
 ```
 
 ## 2. 测试前准备
@@ -347,26 +350,37 @@ pytest tests/test_alx_g100_protocol.py -q
 
 ### 6.2 真实串口解析测试
 
-当前仓库尚未提供专用 ALX 读取脚本。建议后续新增：
+使用现有 headless runner 做 ALX 只读 dry-run。该命令只读取 ALX 并把
+pipeline 输出写入 CSV，不会控制真实 G1：
 
-```text
-tools/read_alx.py
+```bash
+cd ~/Robot_Follow
+mkdir -p logs
+conda run -n robot-follow python -m robot_follow.main \
+  --port /dev/ttyUSB0 \
+  --duration 20 \
+  --csv logs/alx_dry_run_001.csv
 ```
 
-该脚本应输出：
+终端和 CSV 应包含：
 
 ```text
 distance_m
 azimuth_deg
-elevation_deg
-tag_status
-frame_rate
+target_x_m
+target_y_m
+command_kind
+command_reason
+vx
+omega
+alx_fps
+alx_age_ms
 ```
 
 预期输出格式：
 
 ```text
-distance=1.25m azimuth=3deg elevation=-2deg tag_status=0x1234 fps=10.0
+status=live alx_fps=40.0 age=25.0ms d=1.50m az=0.0deg cmd=move/holding vx=+0.000 omega=+0.0000
 ```
 
 通过标准：
@@ -375,7 +389,7 @@ distance=1.25m azimuth=3deg elevation=-2deg tag_status=0x1234 fps=10.0
 手环靠近基站时 distance 变小
 手环远离基站时 distance 变大
 手环左右移动时 azimuth 有明显变化
-tag_status 能持续打印
+alx_fps 稳定，age 不持续升高
 程序不会因为半包、错包或脏数据崩溃
 ```
 
@@ -715,13 +729,27 @@ Jetson SSH 终端可用
 
 ### 11.2 启动闭环
 
+只有前面 ALX dry-run、G1 SDK、StopMove 和单次低速 Move 全部通过后，
+才运行真实闭环。第一轮使用极低速、短时长：
+
 ```bash
 cd ~/Robot_Follow
-当前代码尚未提供真实 G1 闭环运动入口。
+mkdir -p logs
+conda run -n robot-follow python -m robot_follow.run_logger \
+  --test-env jetson \
+  --test-type closed_loop_low_speed \
+  -- \
+  --config configs/jetson_g1_safe.yaml \
+  --enable-motion \
+  --i-understand-this-moves-robot
 ```
 
-本阶段需要等 G1 motion bridge 接入后再执行。不要把第 9 节的
-headless dry-run 命令当成真实机器人闭环控制命令。
+`configs/jetson_g1_safe.yaml` 中的参数会生效；命令行参数会覆盖 YAML。
+如果前面旋转方向校准发现方向相反，可以临时追加：
+
+```bash
+  --yaw-sign -1
+```
 
 ### 11.3 闭环动作测试
 
@@ -749,23 +777,7 @@ headless dry-run 命令当成真实机器人闭环控制命令。
 
 ### 11.4 人工停止测试
 
-SSH 终端中输入：
-
-```text
-q
-```
-
-然后按 Enter。
-
-预期：
-
-```text
-程序调用 StopMove
-G1 停止
-程序退出
-```
-
-再次运行程序，测试：
+SSH 终端中按：
 
 ```text
 Ctrl+C
@@ -777,6 +789,7 @@ Ctrl+C
 程序捕获中断
 先调用 StopMove
 再退出
+G1 停止
 ```
 
 最后测试：
