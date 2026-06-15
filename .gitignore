@@ -38,6 +38,10 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
+# Vendored external dependencies (installed editable, not part of this repo)
+# e.g. unitree_sdk2_python cloned from GitHub source under vendor/
+vendor/
+
 # Editor files
 *.swp
 *~
