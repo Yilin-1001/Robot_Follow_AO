@@ -89,6 +89,12 @@ conda run -n robot-follow python -m robot_follow.main \
 robot-follow --config configs/jetson_g1_safe.yaml --dry-run
 ```
 
+如果已经在仓库根目录，也可以直接使用 Python 模块入口；这种方式适合开发调试：
+
+```bash
+conda run -n robot-follow python -m robot_follow.main --config configs/jetson_g1_safe.yaml --dry-run
+```
+
 ## 真实机器人运行
 
 真实 G1 运动默认关闭。必须同时传入 `--enable-motion` 和 `--i-understand-this-moves-robot`，程序才会创建 `G1MotionBridge` 并向机器人发送速度命令：
@@ -147,6 +153,36 @@ conda run -n robot-follow python -m robot_follow.run_logger \
 
 ```bash
 scripts/run_jetson_logged.sh
+```
+
+注意：`scripts/run_jetson_logged.sh` 是现场闭环测试脚本，默认会启用真实机器人运动。脚本内部会调用 `robot_follow.run_logger`，并自动传入：
+
+```bash
+--config configs/jetson_g1_safe.yaml \
+--enable-motion \
+--i-understand-this-moves-robot
+```
+
+常用覆盖方式：
+
+```bash
+# 指定单次运行时长，单位秒
+DURATION=10 scripts/run_jetson_logged.sh
+
+# 指定测试标签，日志目录会包含这些标签
+TEST_ENV=jetson TEST_TYPE=closed_loop_low_speed scripts/run_jetson_logged.sh
+
+# 指定配置文件
+CONFIG=configs/jetson_g1_safe.yaml scripts/run_jetson_logged.sh
+
+# 指定 conda 环境
+CONDA_ENV=robot-follow scripts/run_jetson_logged.sh
+```
+
+脚本后面追加的参数会继续传给 `robot_follow.main`，例如临时覆盖串口或网卡：
+
+```bash
+DURATION=10 scripts/run_jetson_logged.sh --port /dev/ttyUSB1 --net-iface eth0
 ```
 
 ## 测试
