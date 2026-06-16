@@ -53,6 +53,7 @@ vendor/
 *~
 
 # Claude Code
+CLAUDE.md
 .claude/
 claude-skills/
 
