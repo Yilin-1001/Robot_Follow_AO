@@ -10,7 +10,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Optional
+from typing import Callable, Deque, Optional
 
 from robot_follow.alx_g100_protocol import HeartbeatSample, PositionSample
 from robot_follow.serial_reader import ALXG100SerialReader
@@ -46,11 +46,15 @@ class ALXLiveSource:
         baudrate: int = 115200,
         timeout: float = 0.05,
         fps_window_s: float = 2.0,
+        reconnect_delay_s: float = 0.5,
+        reader_factory: Callable[..., ALXG100SerialReader] = ALXG100SerialReader,
     ) -> None:
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.fps_window_s = fps_window_s
+        self.reconnect_delay_s = reconnect_delay_s
+        self.reader_factory = reader_factory
 
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -125,33 +129,39 @@ class ALXLiveSource:
         )
 
     def _run(self) -> None:
-        reader = ALXG100SerialReader(
-            port=self.port,
-            baudrate=self.baudrate,
-            timeout=self.timeout,
-        )
-        self._reader = reader
-        try:
-            reader.open()
-            with self._lock:
-                self._error = None
-            for parsed in reader.read_samples():
-                if self._stop.is_set():
-                    break
-                if isinstance(parsed, PositionSample):
-                    self._update_position(parsed)
-                elif isinstance(parsed, HeartbeatSample):
-                    with self._lock:
-                        self._latest_heartbeat_at = parsed.timestamp
-        except Exception as exc:
-            if not self._stop.is_set():
-                with self._lock:
-                    self._error = f"{type(exc).__name__}: {exc}"
-        finally:
+        while not self._stop.is_set():
+            reader = self.reader_factory(
+                port=self.port,
+                baudrate=self.baudrate,
+                timeout=self.timeout,
+            )
+            self._reader = reader
             try:
-                reader.close()
-            except Exception:
-                pass
+                reader.open()
+                with self._lock:
+                    self._error = None
+                for parsed in reader.read_samples():
+                    if self._stop.is_set():
+                        break
+                    if isinstance(parsed, PositionSample):
+                        self._update_position(parsed)
+                    elif isinstance(parsed, HeartbeatSample):
+                        with self._lock:
+                            self._latest_heartbeat_at = parsed.timestamp
+            except Exception as exc:
+                if not self._stop.is_set():
+                    with self._lock:
+                        self._error = f"{type(exc).__name__}: {exc}"
+            finally:
+                try:
+                    reader.close()
+                except Exception:
+                    pass
+                if self._reader is reader:
+                    self._reader = None
+
+            if not self._stop.is_set():
+                self._stop.wait(self.reconnect_delay_s)
 
     def _update_position(self, sample: PositionSample) -> None:
         now = time.monotonic()
