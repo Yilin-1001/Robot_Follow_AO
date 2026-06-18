@@ -8,7 +8,7 @@ import pytest
 from robot_follow.run_logger import (
     build_run_log_paths,
     parse_args,
-    robot_args_with_csv,
+    robot_args_without_csv,
     slugify,
     strip_csv_args,
     write_archive,
@@ -42,17 +42,15 @@ def test_build_run_log_paths_include_env_type_and_time():
     assert paths.archive_path == Path("logs/20260615_160530_local_alx_dry_run.zip")
 
 
-def test_robot_args_with_csv_replaces_user_csv():
-    args = robot_args_with_csv(
+def test_robot_args_without_csv_disables_user_csv():
+    args = robot_args_without_csv(
         ["--config", "configs/jetson_g1_safe.yaml", "--csv", "old.csv"],
-        Path("logs/runs/run/run_data.csv"),
     )
 
     assert args == [
         "--config",
         "configs/jetson_g1_safe.yaml",
-        "--csv",
-        "logs/runs/run/run_data.csv",
+        "--no-csv",
     ]
 
 

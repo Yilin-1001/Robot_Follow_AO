@@ -241,6 +241,22 @@ follow:
     assert pipeline.controller.config.angle_deadzone_deg == pytest.approx(5.0)
 
 
+def test_no_csv_overrides_yaml_csv_path(tmp_path):
+    config_path = tmp_path / "jetson.yaml"
+    config_path.write_text(
+        """
+run:
+  csv_path: logs/from_yaml.csv
+""",
+        encoding="utf-8",
+    )
+
+    args = _parse_args(["--config", str(config_path), "--no-csv"])
+    live_config = create_live_alx_config(args)
+
+    assert live_config.csv_path is None
+
+
 def test_cli_flags_override_yaml_config(tmp_path):
     config_path = tmp_path / "jetson.yaml"
     config_path.write_text(
