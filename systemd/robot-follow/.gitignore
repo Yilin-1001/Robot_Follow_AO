@@ -1,0 +1,64 @@
+# Keil/MDK build outputs
+*.o
+*.d
+*.crf
+*.axf
+*.hex
+*.htm
+*.lnp
+*.sct
+*.dep
+*.lst
+*.map
+*.iex
+*.build_log.htm
+
+# Keil project user-specific files
+*.uvguix.*
+*.bak
+
+# JLink debugger files
+JLinkLog.txt
+JLinkSettings.ini
+
+# Build output directories
+STM32F1-Usart/Project/Outputs/
+STM32F1-Usart/Project/Listings/
+
+# STM32 firmware project excluded from GitHub upload
+STM32F1-Usart/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Runtime outputs
+logs/*
+!logs/.gitkeep
+configs/runs/*
+!configs/runs/.gitkeep
+
+# Vendored external dependencies (installed editable, not part of this repo)
+# e.g. unitree_sdk2_python cloned from GitHub source under vendor/
+vendor/
+
+# Editor files
+*.swp
+*~
+
+# Claude Code
+CLAUDE.md
+.claude/
+claude-skills/
+
+# Codex
+.codex/
+
+# Agents
+.agents/
