@@ -229,7 +229,7 @@ def _resolve_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
     resolved.print_every = float(
         _resolve_value(args.print_every, config, "run", ("print_every_s", "print_every"), 0.5)
     )
-    csv_path = _resolve_value(args.csv, config, "run", ("csv_path", "csv"), None)
+    csv_path = None if args.no_csv else _resolve_value(args.csv, config, "run", ("csv_path", "csv"), None)
     resolved.csv = Path(csv_path) if csv_path is not None else None
 
     resolved.net_iface = str(
@@ -584,6 +584,8 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser.add_argument("--stale-timeout", type=float, default=None)
     parser.add_argument("--print-every", type=float, default=None)
     parser.add_argument("--csv", type=Path, default=None, help="Optional CSV log path.")
+    parser.add_argument("--no-csv", action="store_true", default=False,
+                        help="Disable CSV logging, including any path from config.")
 
     # Motion output switches (G1 hardware safety gating). Without
     # --enable-motion the runner uses MockMotionBridge (no real robot motion).

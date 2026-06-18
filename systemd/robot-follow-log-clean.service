@@ -1,0 +1,12 @@
+[Unit]
+Description=Clean Robot Follow logs older than 7 days on boot
+After=local-fs.target
+Before=robot-follow.service
+
+[Service]
+Type=oneshot
+User=fk
+ExecStart=/home/fk/robot-follow/scripts/clean_logs_on_boot.sh
+
+[Install]
+WantedBy=multi-user.target

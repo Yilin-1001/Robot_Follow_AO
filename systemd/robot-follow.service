@@ -1,0 +1,19 @@
+[Unit]
+Description=Robot Follow Service
+After=network-online.target time-sync.target systemd-udev-settle.service dev-ttyUSB0.device
+Wants=network-online.target time-sync.target systemd-udev-settle.service
+Requires=dev-ttyUSB0.device
+
+[Service]
+Type=simple
+User=fk
+WorkingDirectory=/home/fk/robot-follow
+TimeoutStartSec=180
+ExecStartPre=/bin/sleep 45
+ExecStartPre=/bin/bash -lc 'for i in {1..60}; do [ -e /dev/ttyUSB0 ] && [ -e /sys/class/net/eth0 ] && [ "$(cat /sys/class/net/eth0/operstate)" = "up" ] && ip -4 addr show eth0 | grep -q "192.168.123." && exit 0; sleep 1; done; exit 1'
+ExecStart=/home/fk/robot-follow/robot-follow --test-env jetson --test-type normal_speed --logs-root /home/fk/robot-follow/logs -- --config /home/fk/robot-follow/configs/jetson_g1_safe.yaml --enable-motion --i-understand-this-moves-robot
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

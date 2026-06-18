@@ -1,9 +1,9 @@
 """Logged test runner for repeatable Robot_Follow field tests.
 
-This wrapper runs ``robot_follow.main`` while saving console output, CSV data,
-the exact command, and metadata under one run directory whose name includes the
-test environment, test type, and local timestamp. A single zip archive can be
-created with ``--zip`` when needed for transfer or sharing.
+This wrapper runs ``robot_follow.main`` while saving console output, the exact
+command, and metadata under one run directory whose name includes the test
+environment, test type, and local timestamp. A single zip archive can be created
+with ``--zip`` when needed for transfer or sharing.
 """
 
 from __future__ import annotations
@@ -111,6 +111,11 @@ def robot_args_with_csv(robot_args: list[str], csv_path: Path) -> list[str]:
     return [*strip_csv_args(robot_args), "--csv", str(csv_path)]
 
 
+def robot_args_without_csv(robot_args: list[str]) -> list[str]:
+    """Return robot_follow.main args with CSV logging disabled."""
+    return [*strip_csv_args(robot_args), "--no-csv"]
+
+
 def write_command_file(path: Path, argv: list[str]) -> None:
     """Persist the exact command in a shell-readable single line."""
     path.write_text(" ".join(_shell_quote(arg) for arg in argv) + "\n", encoding="utf-8")
@@ -123,7 +128,7 @@ def write_metadata(
     test_env: str,
     test_type: str,
     robot_args: list[str],
-    csv_path: Path,
+    csv_path: Path | None,
     console_log_path: Path,
     exit_code: int,
     archive_path: Path | None = None,
@@ -134,7 +139,7 @@ def write_metadata(
         "test_env": test_env,
         "test_type": test_type,
         "robot_args": robot_args,
-        "csv_path": str(csv_path),
+        "csv_path": str(csv_path) if csv_path is not None else None,
         "console_log_path": str(console_log_path),
         "archive_path": str(archive_path) if archive_path is not None else None,
         "exit_code": exit_code,
@@ -155,7 +160,6 @@ def write_archive(paths: RunLogPaths) -> None:
     """Create a single zip file containing all run artifacts."""
     with zipfile.ZipFile(paths.archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in (
-            paths.csv_path,
             paths.console_log_path,
             paths.command_path,
             paths.metadata_path,
@@ -167,8 +171,8 @@ def write_archive(paths: RunLogPaths) -> None:
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run robot_follow.main and store console output, CSV data, command, "
-            "and metadata under logs/runs/<timestamp>_<env>_<type>/. Use "
+            "Run robot_follow.main and store console output, command, and "
+            "metadata under logs/runs/<timestamp>_<env>_<type>/. Use "
             "--zip to also create logs/<timestamp>_<env>_<type>.zip."
         )
     )
@@ -199,7 +203,7 @@ def run_logged_test(args: argparse.Namespace) -> int:
     )
     paths.run_dir.mkdir(parents=True, exist_ok=False)
 
-    robot_args = robot_args_with_csv(list(args.robot_args), paths.csv_path)
+    robot_args = robot_args_without_csv(list(args.robot_args))
     wrapper_command = [
         "python",
         "-m",
@@ -222,7 +226,7 @@ def run_logged_test(args: argparse.Namespace) -> int:
         with redirect_stdout(tee_out), redirect_stderr(tee_err):
             print(f"run_id={paths.run_id}")
             print(f"run_dir={paths.run_dir}")
-            print(f"csv={paths.csv_path}")
+            print("csv=disabled")
             print(f"console_log={paths.console_log_path}")
             if args.zip:
                 print(f"archive={paths.archive_path}")
@@ -241,7 +245,7 @@ def run_logged_test(args: argparse.Namespace) -> int:
         test_env=args.test_env,
         test_type=args.test_type,
         robot_args=robot_args,
-        csv_path=paths.csv_path,
+        csv_path=None,
         console_log_path=paths.console_log_path,
         archive_path=paths.archive_path if args.zip else None,
         exit_code=exit_code,
