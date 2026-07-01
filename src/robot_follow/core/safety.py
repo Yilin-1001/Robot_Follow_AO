@@ -1,7 +1,8 @@
 """Safety manager for the follow system.
 
 Determines whether the robot must stop based on data timeout, proximity,
-jump detection, serial errors, SDK errors, or manual stop requests.
+jump detection, serial errors, SDK request timeouts, SDK errors, or manual
+stop requests.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ class SafetyInput:
     angle_jump: float
     data_valid: bool = True
     serial_error: bool = False
+    sdk_timeout: bool = False
     sdk_error: bool = False
     manual_stop: bool = False
 
@@ -100,7 +102,12 @@ class SafetyManager:
         if inp.sdk_error:
             return SafetyVerdict(safe=False, reason="sdk_error")
 
-        # 4. Data invalid or timeout — checked together because both mean
+        # 4. SDK request timeout. This is distinct from a hard SDK error so
+        #    the bridge can attempt throttled zero-velocity recovery.
+        if inp.sdk_timeout:
+            return SafetyVerdict(safe=False, reason="sdk_timeout")
+
+        # 5. Data invalid or timeout — checked together because both mean
         #    we have no reliable position to act on.
         if not inp.data_valid:
             return SafetyVerdict(safe=False, reason="data_invalid")
@@ -122,15 +129,15 @@ class SafetyManager:
         if now - inp.timestamp > cfg.data_timeout_s:
             return SafetyVerdict(safe=False, reason="data_timeout")
 
-        # 5. Distance too close
+        # 6. Distance too close
         if inp.distance_m < cfg.min_safe_distance_m:
             return SafetyVerdict(safe=False, reason="too_close")
 
-        # 6. Distance jump
+        # 7. Distance jump
         if inp.distance_jump > cfg.max_distance_jump_m:
             return SafetyVerdict(safe=False, reason="distance_jump")
 
-        # 7. Angle jump
+        # 8. Angle jump
         if inp.angle_jump > cfg.max_angle_jump_deg:
             return SafetyVerdict(safe=False, reason="angle_jump")
 

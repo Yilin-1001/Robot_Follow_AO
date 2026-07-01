@@ -199,6 +199,18 @@ def test_pipeline_sdk_error_stops_before_filter_update():
     assert not pipe.filter.initialized
 
 
+def test_pipeline_sdk_timeout_stops_before_filter_update():
+    pipe = FollowPipeline()
+    result = pipe.process(_sample(distance_m=2.0, azimuth_deg=0.0), sdk_timeout=True)
+
+    assert result.command.kind == "stop"
+    assert result.command.reason == "sdk_timeout"
+    assert result.filtered is None
+    assert result.verdict is not None
+    assert not result.verdict.safe
+    assert not pipe.filter.initialized
+
+
 # --------------------------------------------------------------------------- #
 # 7. data_timeout -> stop (deterministic via injected clock)
 # --------------------------------------------------------------------------- #

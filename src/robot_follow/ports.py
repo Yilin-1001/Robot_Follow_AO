@@ -20,6 +20,11 @@ class MotionBridge(Protocol):
         """Whether an SDK error has occurred (always False for mock bridges)."""
         ...
 
+    @property
+    def sdk_timeout(self) -> bool:
+        """Whether SDK requests are timing out (always False for mock bridges)."""
+        ...
+
     def init(self) -> None:
         """Initialize the bridge (DDS + SDK client, or no-op for mock)."""
         ...

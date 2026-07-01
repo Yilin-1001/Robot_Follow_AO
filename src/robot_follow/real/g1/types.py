@@ -19,6 +19,9 @@ class G1BridgeConfig:
     max_abs_omega: float = 0.30  # rad/s, conservative for first hardware test
     yaw_sign: int = 1  # +1 or -1, calibrate on-site if rotation is reversed
     sdk_timeout_s: float = 10.0  # SDK call timeout
+    sdk_timeout_code: int = 3104  # Unitree SDK request timeout return code
+    sdk_timeout_retry_interval_s: float = 1.0  # backoff for zero-velocity retries
+    max_consecutive_sdk_timeouts: int = 3  # escalate repeated timeouts to ERROR
     command_timeout_s: float = 0.5  # watchdog interval before auto-stop
     # NOTE: continuous_move is intentionally NOT exposed. The SDK's
     # continuous_move=True sets duration=864000s (~10 days), which means a
@@ -40,6 +43,16 @@ class G1BridgeConfig:
             raise ValueError(f"command_timeout_s must be > 0, got {self.command_timeout_s}")
         if self.sdk_timeout_s <= 0:
             raise ValueError(f"sdk_timeout_s must be > 0, got {self.sdk_timeout_s}")
+        if self.sdk_timeout_retry_interval_s <= 0:
+            raise ValueError(
+                "sdk_timeout_retry_interval_s must be > 0, "
+                f"got {self.sdk_timeout_retry_interval_s}"
+            )
+        if self.max_consecutive_sdk_timeouts <= 0:
+            raise ValueError(
+                "max_consecutive_sdk_timeouts must be > 0, "
+                f"got {self.max_consecutive_sdk_timeouts}"
+            )
 
 
 class BridgeState(Enum):
@@ -49,7 +62,9 @@ class BridgeState(Enum):
     - CREATED -> INITIALIZED: init() success
     - INITIALIZED/STOPPED -> ACTIVE: move() success
     - ACTIVE/INITIALIZED -> STOPPED: stop() or watchdog timeout
-    - ANY -> ERROR: SDK exception, validation failure, init failure
+    - ANY -> SDK_TIMEOUT: SDK request timeout return code
+    - ANY -> ERROR: SDK exception, validation failure, init failure,
+      or repeated SDK request timeouts
     - ERROR -> STOPPED: stop() clears motion output
     """
 
@@ -57,4 +72,5 @@ class BridgeState(Enum):
     INITIALIZED = "initialized"  # DDS and LocoClient ready
     ACTIVE = "active"        # Last command was a successful move
     STOPPED = "stopped"      # Last command was StopMove
+    SDK_TIMEOUT = "sdk_timeout"  # SDK request timed out; retry stop with backoff
     ERROR = "error"          # SDK error or validation failure

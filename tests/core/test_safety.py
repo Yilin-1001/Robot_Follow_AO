@@ -14,6 +14,7 @@ def _make_input(
     angle_jump: float = 0.0,
     data_valid: bool = True,
     serial_error: bool = False,
+    sdk_timeout: bool = False,
     sdk_error: bool = False,
     manual_stop: bool = False,
 ) -> SafetyInput:
@@ -25,6 +26,7 @@ def _make_input(
         angle_jump=angle_jump,
         data_valid=data_valid,
         serial_error=serial_error,
+        sdk_timeout=sdk_timeout,
         sdk_error=sdk_error,
         manual_stop=manual_stop,
     )
@@ -168,3 +170,17 @@ def test_manual_stop():
     v = mgr.check(_make_input(manual_stop=True))
     assert not v.safe
     assert v.reason == "manual_stop"
+
+
+def test_sdk_timeout():
+    mgr = SafetyManager()
+    v = mgr.check(_make_input(sdk_timeout=True))
+    assert not v.safe
+    assert v.reason == "sdk_timeout"
+
+
+def test_sdk_error_takes_priority_over_sdk_timeout():
+    mgr = SafetyManager()
+    v = mgr.check(_make_input(sdk_timeout=True, sdk_error=True))
+    assert not v.safe
+    assert v.reason == "sdk_error"

@@ -6,8 +6,9 @@ Hot-path SDK contract (verified against ``unitree_sdk2_python`` source at
 The high-level ``LocoClient.Move`` / ``StopMove`` wrappers call ``SetVelocity``
 internally but DISCARD its return code and return ``None``. Only
 ``SetVelocity(vx, vy, omega, duration=1.0)`` returns a ``code``
-(0 = success, non-zero = failure; e.g. RPC timeout, send error, or "robot not
-in motion state"). ``Init`` likewise returns ``None``.
+(0 = success, non-zero = failure). Unitree documents return code ``3104`` as
+a request timeout; other non-zero codes remain hard SDK errors. ``Init``
+likewise returns ``None``.
 
 To observe SDK failures on the hot path, this bridge calls ``SetVelocity``
 directly instead of the ``Move`` / ``StopMove`` wrappers:
@@ -17,11 +18,12 @@ directly instead of the ``Move`` / ``StopMove`` wrappers:
 
 These are byte-equivalent to the wrappers (both use ``duration=1`` in the
 non-continuous case) but expose the real return code, so a non-zero result
-(e.g. G1 not yet in motion state after the operator skipped the manual boot
-sequence) is detected and reported as ``sdk_error`` instead of being silently
-swallowed. ``Init`` returns ``None`` on the real SDK, so init failure is
-detected via exceptions (``ChannelFactoryInitialize`` / ``LocoClient()`` /
-``SetTimeout`` / ``Init``), not via a return code.
+is detected instead of being silently swallowed. Request timeouts enter a
+degraded ``sdk_timeout`` state with throttled zero-velocity retries; repeated
+timeouts or non-timeout failures are reported as ``sdk_error``. ``Init`` returns
+``None`` on the real SDK, so init failure is detected via exceptions
+(``ChannelFactoryInitialize`` / ``LocoClient()`` / ``SetTimeout`` / ``Init``),
+not via a return code.
 
 See ``docs/superpowers/plans/2026-06-12-g1-command-bridge.md`` Task 0 Step 5
 for the verified API contract.
@@ -54,15 +56,17 @@ class G1MotionBridge:
 
     This bridge is a thin but conservative hardware output adapter. It:
     - Performs final defensive validation (NaN/inf, velocity limits)
-    - Manages internal state machine (CREATED, INITIALIZED, ACTIVE, STOPPED, ERROR)
+    - Manages internal state machine (CREATED, INITIALIZED, ACTIVE, STOPPED,
+      SDK_TIMEOUT, ERROR)
     - Implements watchdog timeout for automatic stop
     - Uses delayed SDK import (init() time, not module import time)
 
     Hot-path safety rule: ``move`` / ``stop`` / ``tick`` MUST NOT raise. A
-    runtime or SDK error is recorded as ``sdk_error`` + best-effort stop +
-    ERROR state, so the control loop never dies on a recoverable error; the
-    next frame sees ``sdk_error`` and the pipeline outputs a stop. Only
-    ``init()`` raises (pre-loop, fatal — the run cannot start).
+    SDK request timeouts are recorded as ``sdk_timeout`` and retried with
+    backoff. Other runtime or SDK errors are recorded as ``sdk_error`` +
+    best-effort stop + ERROR state, so the control loop never dies on a
+    recoverable error. Only ``init()`` raises (pre-loop, fatal — the run cannot
+    start).
 
     Usage
     -----
@@ -94,6 +98,8 @@ class G1MotionBridge:
         self._client: object | None = None
         self._state = BridgeState.CREATED
         self._sdk_error = False
+        self._consecutive_sdk_timeouts = 0
+        self._last_stop_attempt_time: float | None = None
         self._last_dispatch_time: float | None = None
 
     @property
@@ -105,6 +111,11 @@ class G1MotionBridge:
     def sdk_error(self) -> bool:
         """Whether an SDK error has occurred."""
         return self._sdk_error
+
+    @property
+    def sdk_timeout(self) -> bool:
+        """Whether the bridge is degraded by SDK request timeouts."""
+        return self._state == BridgeState.SDK_TIMEOUT
 
     @property
     def config(self) -> G1BridgeConfig:
@@ -180,6 +191,10 @@ class G1MotionBridge:
             # frame's pipeline outputs a stop.
             self._record_error(f"move rejected (state={self._state.value})")
             return
+        if self._state == BridgeState.SDK_TIMEOUT:
+            logger.warning("move suppressed while recovering from SDK timeout")
+            self.stop("sdk_timeout")
+            return
         if not self._validate_move_command(command):
             return  # validation failure already recorded + best-effort stop
 
@@ -193,9 +208,14 @@ class G1MotionBridge:
 
         try:
             code = self._client.SetVelocity(vx, vy, omega, duration=_MOVE_DURATION_S)
+            if _is_timeout_code(code, self._config):
+                self._record_timeout(f"G1 SetVelocity timed out with code {code}")
+                self.stop("sdk_timeout")
+                return
             if _is_error_code(code):
                 self._record_error(f"G1 SetVelocity returned error code {code}")
                 return
+            self._clear_timeout_state()
             self._state = BridgeState.ACTIVE
             self._last_dispatch_time = self._clock()
             logger.debug(f"G1 move: vx={vx:.3f} omega={omega:.3f}")
@@ -207,22 +227,31 @@ class G1MotionBridge:
 
         Calls ``SetVelocity(0.0, 0.0, 0.0, duration=1.0)``, byte-equivalent to
         ``StopMove()`` but exposing the real return code. Never raises; a
-        non-zero return code is recorded as ``sdk_error`` + ERROR state so the
-        control loop keeps running. A failed stop is NOT retried here — the
-        retry would be byte-identical to the call that just failed.
+        Unitree request timeout code 3104 is treated as a degraded timeout
+        state and retried with backoff. Other non-zero return codes are
+        recorded as ``sdk_error`` + ERROR state so the control loop keeps
+        running.
         """
         if self._client is None:
             logger.warning("G1 stop called before init, ignoring")
             return
+        now = self._clock()
+        if not self._should_attempt_stop(now):
+            return
+        self._last_stop_attempt_time = now
         try:
             code = self._client.SetVelocity(0.0, 0.0, 0.0, duration=_MOVE_DURATION_S)
+            if _is_timeout_code(code, self._config):
+                self._record_timeout(f"G1 stop timed out with code {code}")
+                return
             if _is_error_code(code):
                 self._sdk_error = True
                 self._state = BridgeState.ERROR
                 logger.error(f"G1 stop returned error code {code}")
                 return
+            self._clear_timeout_state()
             self._state = BridgeState.STOPPED
-            self._last_dispatch_time = self._clock()
+            self._last_dispatch_time = now
             logger.info(f"G1 stop: reason={reason if isinstance(reason, str) else reason.reason}")
         except Exception as e:
             self._sdk_error = True
@@ -274,6 +303,43 @@ class G1MotionBridge:
         self._state = BridgeState.ERROR
         self._best_effort_stop()
         logger.error(message)
+
+    def _record_timeout(self, message: str) -> None:
+        """Record a Unitree request timeout without immediately hard-failing."""
+        if self._sdk_error or self._state == BridgeState.ERROR:
+            self._state = BridgeState.ERROR
+            logger.warning(message)
+            return
+        self._consecutive_sdk_timeouts += 1
+        if self._consecutive_sdk_timeouts >= self._config.max_consecutive_sdk_timeouts:
+            self._sdk_error = True
+            self._state = BridgeState.ERROR
+            logger.error(
+                f"{message}; escalating after "
+                f"{self._consecutive_sdk_timeouts} consecutive timeouts"
+            )
+            return
+        self._state = BridgeState.SDK_TIMEOUT
+        logger.warning(message)
+
+    def _clear_timeout_state(self) -> None:
+        """Clear degraded timeout accounting after a successful SDK request."""
+        self._consecutive_sdk_timeouts = 0
+
+    def _should_attempt_stop(self, now: float) -> bool:
+        """Throttle stop retries while recovering from SDK request timeouts."""
+        if self._state != BridgeState.SDK_TIMEOUT:
+            return True
+        if self._last_stop_attempt_time is None:
+            return True
+        elapsed = now - self._last_stop_attempt_time
+        if elapsed >= self._config.sdk_timeout_retry_interval_s:
+            return True
+        logger.debug(
+            "G1 stop retry throttled after SDK timeout "
+            f"({elapsed:.2f}s < {self._config.sdk_timeout_retry_interval_s:.2f}s)"
+        )
+        return False
 
     def _validate_move_command(self, command: MotionCommand) -> bool:
         """Validate move command before sending to SDK.
@@ -332,3 +398,8 @@ def _is_error_code(code: object) -> bool:
     path; ``Init`` failure is handled via exceptions in ``init()``.
     """
     return code is not None and code != 0
+
+
+def _is_timeout_code(code: object, config: G1BridgeConfig) -> bool:
+    """Return True if an SDK return value represents a request timeout."""
+    return code == config.sdk_timeout_code

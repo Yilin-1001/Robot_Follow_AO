@@ -490,6 +490,7 @@ def run_live_alx_simulation(
             step = pipeline.process(
                 sample,
                 serial_error=serial_error,
+                sdk_timeout=bridge.sdk_timeout,
                 sdk_error=bridge.sdk_error,
             )
             bridge.dispatch(step.command)

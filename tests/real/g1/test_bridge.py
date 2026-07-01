@@ -44,6 +44,8 @@ class FakeLocoClient:
     Failure injection mirrors the real SDK's failure modes:
     - ``fail_next``: the next ``SetVelocity`` returns code 1 (one-shot).
     - ``persistent_fail``: every ``SetVelocity`` returns code 1.
+    - ``timeout_next``: the next ``SetVelocity`` returns code 3104 (one-shot).
+    - ``persistent_timeout``: every ``SetVelocity`` returns code 3104.
     - ``init_fails``: ``Init`` raises (the real init failure mode, since real
       ``Init`` returns ``None`` rather than a code).
     """
@@ -52,6 +54,8 @@ class FakeLocoClient:
         self,
         fail_next: bool = False,
         persistent_fail: bool = False,
+        timeout_next: bool = False,
+        persistent_timeout: bool = False,
         init_fails: bool = False,
     ):
         self.set_velocity_calls = []  # list of (vx, vy, omega, duration)
@@ -59,14 +63,21 @@ class FakeLocoClient:
         self.timeout = None
         self.fail_next = fail_next
         self.persistent_fail = persistent_fail
+        self.timeout_next = timeout_next
+        self.persistent_timeout = persistent_timeout
         self.init_fails = init_fails
         # Counters for the wrapper methods the bridge must NOT call.
         self.move_calls = 0
         self.stopmove_calls = 0
 
     def _code(self):
+        if self.persistent_timeout:
+            return 3104
         if self.persistent_fail:
             return 1
+        if self.timeout_next:
+            self.timeout_next = False
+            return 3104
         if self.fail_next:
             self.fail_next = False
             return 1
@@ -213,6 +224,35 @@ def test_move_set_velocity_return_code_nonzero_triggers_error():
     assert fake.set_velocity_calls[-1] == _ZERO_VEL_CALL
 
 
+def test_move_timeout_attempts_stop_without_hard_error_when_stop_succeeds():
+    """A single Unitree 3104 request timeout stops motion but can recover if
+    the following zero-velocity request succeeds."""
+    fake = FakeLocoClient(timeout_next=True)
+    bridge = G1MotionBridge("eth0", fake_client=fake)
+    bridge.init()
+
+    bridge.move(_move())
+
+    assert not bridge.sdk_error
+    assert not bridge.sdk_timeout
+    assert bridge.state == BridgeState.STOPPED
+    assert fake.set_velocity_calls == [(0.1, 0.0, 0.0, 1.0), _ZERO_VEL_CALL]
+
+
+def test_move_timeout_stays_degraded_when_stop_also_times_out():
+    fake = FakeLocoClient(persistent_timeout=True)
+    cfg = G1BridgeConfig(max_consecutive_sdk_timeouts=3)
+    bridge = G1MotionBridge("eth0", config=cfg, fake_client=fake)
+    bridge.init()
+
+    bridge.move(_move())
+
+    assert not bridge.sdk_error
+    assert bridge.sdk_timeout
+    assert bridge.state == BridgeState.SDK_TIMEOUT
+    assert fake.set_velocity_calls == [(0.1, 0.0, 0.0, 1.0), _ZERO_VEL_CALL]
+
+
 def test_move_in_error_state_is_rejected_without_raising():
     """Once in ERROR, move() refuses to send its velocity but never raises."""
     fake = FakeLocoClient()
@@ -259,6 +299,75 @@ def test_stop_set_velocity_return_code_nonzero_triggers_error():
     assert bridge.state == BridgeState.ERROR
     assert len(fake.set_velocity_calls) == calls_before + 1
     assert fake.set_velocity_calls[-1] == _ZERO_VEL_CALL
+
+
+def test_stop_timeout_enters_degraded_state_without_hard_error():
+    fake = FakeLocoClient(timeout_next=True)
+    bridge = G1MotionBridge("eth0", fake_client=fake)
+    bridge.init()
+
+    bridge.stop("test")
+
+    assert not bridge.sdk_error
+    assert bridge.sdk_timeout
+    assert bridge.state == BridgeState.SDK_TIMEOUT
+    assert fake.set_velocity_calls == [_ZERO_VEL_CALL]
+
+
+def test_stop_timeout_retries_are_throttled():
+    fake = FakeLocoClient(persistent_timeout=True)
+    t = [0.0]
+    cfg = G1BridgeConfig(sdk_timeout_retry_interval_s=1.0)
+    bridge = G1MotionBridge("eth0", config=cfg, fake_client=fake, clock=lambda: t[0])
+    bridge.init()
+
+    bridge.stop("first")
+    bridge.stop("too_soon")
+    t[0] = 0.5
+    bridge.stop("still_too_soon")
+
+    assert len(fake.set_velocity_calls) == 1
+
+    t[0] = 1.0
+    bridge.stop("retry")
+    assert len(fake.set_velocity_calls) == 2
+
+
+def test_consecutive_timeouts_escalate_to_sdk_error():
+    fake = FakeLocoClient(persistent_timeout=True)
+    t = [0.0]
+    cfg = G1BridgeConfig(
+        sdk_timeout_retry_interval_s=1.0,
+        max_consecutive_sdk_timeouts=3,
+    )
+    bridge = G1MotionBridge("eth0", config=cfg, fake_client=fake, clock=lambda: t[0])
+    bridge.init()
+
+    bridge.stop("first")
+    t[0] = 1.0
+    bridge.stop("second")
+    t[0] = 2.0
+    bridge.stop("third")
+
+    assert bridge.sdk_error
+    assert not bridge.sdk_timeout
+    assert bridge.state == BridgeState.ERROR
+
+
+def test_successful_stop_clears_timeout_state():
+    fake = FakeLocoClient(timeout_next=True)
+    t = [0.0]
+    bridge = G1MotionBridge("eth0", fake_client=fake, clock=lambda: t[0])
+    bridge.init()
+
+    bridge.stop("timeout")
+    assert bridge.sdk_timeout
+
+    t[0] = 1.0
+    bridge.stop("recovered")
+    assert not bridge.sdk_error
+    assert not bridge.sdk_timeout
+    assert bridge.state == BridgeState.STOPPED
 
 
 def test_best_effort_stop_when_everything_fails():

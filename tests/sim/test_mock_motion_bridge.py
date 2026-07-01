@@ -170,3 +170,9 @@ class TestMockMotionBridgeProtocol:
         assert bridge.sdk_error is False
         bridge.dispatch(_move())
         assert bridge.sdk_error is False
+
+    def test_sdk_timeout_always_false(self):
+        bridge = MockMotionBridge()
+        assert bridge.sdk_timeout is False
+        bridge.dispatch(_move())
+        assert bridge.sdk_timeout is False

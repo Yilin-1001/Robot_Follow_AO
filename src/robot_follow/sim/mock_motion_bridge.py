@@ -81,6 +81,11 @@ class MockMotionBridge:
         """Mock bridges never report SDK errors."""
         return False
 
+    @property
+    def sdk_timeout(self) -> bool:
+        """Mock bridges never report SDK request timeouts."""
+        return False
+
     def init(self) -> None:
         """No-op: a mock bridge needs no initialization."""
         return None

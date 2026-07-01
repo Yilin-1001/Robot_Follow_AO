@@ -136,6 +136,7 @@ class FollowPipeline:
         *,
         manual_stop: bool = False,
         serial_error: bool = False,
+        sdk_timeout: bool = False,
         sdk_error: bool = False,
     ) -> PipelineStepResult:
         """Process one TargetSample and return the per-frame result.
@@ -151,6 +152,7 @@ class FollowPipeline:
             data_valid=sample.valid,
             manual_stop=manual_stop,
             serial_error=serial_error,
+            sdk_timeout=sdk_timeout,
             sdk_error=sdk_error,
         )
         pre_filter_verdict = self._safety.check(pre_filter_safety)
@@ -158,6 +160,7 @@ class FollowPipeline:
             "manual_stop",
             "serial_error",
             "sdk_error",
+            "sdk_timeout",
             "data_invalid",
             "data_timeout",
         }:
@@ -192,6 +195,7 @@ class FollowPipeline:
             data_valid=True,
             manual_stop=manual_stop,
             serial_error=serial_error,
+            sdk_timeout=sdk_timeout,
             sdk_error=sdk_error,
         )
         verdict = self._safety.check(safety_input)
