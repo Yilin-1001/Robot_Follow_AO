@@ -37,6 +37,8 @@ alx:
 run:
   # 单次测试时长，单位秒。真实闭环第一轮建议 10 秒。
   duration_s: null
+  # SDK error 持续超过该时间后退出进程，由 systemd 自动重启服务。
+  sdk_error_restart_delay_s: 30.0
   # 终端打印间隔，单位秒。只影响输出频率，不影响控制频率。
   print_every_s: 0.5
   # 默认 CSV 路径。使用 run_logger 时会被自动生成的路径覆盖。

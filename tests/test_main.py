@@ -9,6 +9,7 @@ import pytest
 from robot_follow.real.alx_source import ALXSnapshot
 from robot_follow.main import (
     LiveALXConfig,
+    SDK_ERROR_RESTART_EXIT_CODE,
     _parse_args,
     create_follow_pipeline,
     create_live_alx_config,
@@ -49,6 +50,39 @@ class FakeALXSource:
         value = self.snapshots[min(self.index, len(self.snapshots) - 1)]
         self.index += 1
         return value
+
+
+class PersistentSdkErrorBridge:
+    def __init__(self):
+        self.started = False
+        self.closed = False
+        self.stop_reasons = []
+
+    @property
+    def sdk_error(self):
+        return self.started
+
+    @property
+    def sdk_timeout(self):
+        return False
+
+    def init(self):
+        self.started = True
+
+    def dispatch(self, command):
+        pass
+
+    def move(self, command):
+        pass
+
+    def stop(self, reason):
+        self.stop_reasons.append(reason)
+
+    def tick(self, now=None):
+        pass
+
+    def close(self):
+        self.closed = True
 
 
 def _snapshot(*, timestamp=1000.0, distance_m=2.0, azimuth_deg=10.0, error=None):
@@ -185,6 +219,34 @@ def test_run_live_alx_simulation_writes_csv():
     assert "tracking_turning" in output
 
 
+def test_persistent_sdk_error_exits_for_systemd_restart():
+    clock = FakeClock()
+    source = FakeALXSource([_snapshot(timestamp=1000.0)])
+    bridge = PersistentSdkErrorBridge()
+    lines = []
+
+    with pytest.raises(SystemExit) as exc:
+        run_live_alx_simulation(
+            LiveALXConfig(
+                hz=1.0,
+                print_every_s=0.0,
+                sdk_error_restart_delay_s=2.0,
+            ),
+            source=source,
+            bridge=bridge,
+            emit=lines.append,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+    assert exc.value.code == SDK_ERROR_RESTART_EXIT_CODE
+    assert source.stopped is True
+    assert bridge.closed is True
+    assert any("SDK error detected" in line for line in lines)
+    assert any("exiting for systemd restart" in line for line in lines)
+    assert any(line.startswith("summary") for line in lines)
+
+
 def test_yaml_config_populates_runtime_and_pipeline(tmp_path):
     config_path = tmp_path / "jetson.yaml"
     config_path.write_text(
@@ -198,6 +260,7 @@ run:
   duration_s: 12
   frame_limit: 3
   print_every_s: 0.25
+  sdk_error_restart_delay_s: 45
   csv_path: logs/from_yaml.csv
 g1:
   net_iface: eth9
@@ -228,6 +291,7 @@ follow:
     assert live_config.duration_s == pytest.approx(12.0)
     assert live_config.frame_limit == 3
     assert live_config.print_every_s == pytest.approx(0.25)
+    assert live_config.sdk_error_restart_delay_s == pytest.approx(45.0)
     assert str(live_config.csv_path) == "logs/from_yaml.csv"
     assert args.net_iface == "eth9"
     assert args.max_vx == pytest.approx(0.04)

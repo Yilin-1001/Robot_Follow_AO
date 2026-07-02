@@ -36,6 +36,7 @@ Sleeper = Callable[[float], None]
 Emitter = Callable[[str], None]
 
 logger = logging.getLogger(__name__)
+SDK_ERROR_RESTART_EXIT_CODE = 75
 
 ConfigMapping = dict[str, Any]
 
@@ -52,6 +53,7 @@ class LiveALXConfig:
     frame_limit: Optional[int] = None
     print_every_s: float = 0.5
     csv_path: Optional[Path] = None
+    sdk_error_restart_delay_s: Optional[float] = 30.0
 
 
 @dataclass(frozen=True)
@@ -229,6 +231,15 @@ def _resolve_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
     resolved.print_every = float(
         _resolve_value(args.print_every, config, "run", ("print_every_s", "print_every"), 0.5)
     )
+    resolved.sdk_error_restart_delay = _optional_float(
+        _resolve_value(
+            args.sdk_error_restart_delay,
+            config,
+            "run",
+            ("sdk_error_restart_delay_s", "sdk_error_restart_delay"),
+            30.0,
+        )
+    )
     csv_path = None if args.no_csv else _resolve_value(args.csv, config, "run", ("csv_path", "csv"), None)
     resolved.csv = Path(csv_path) if csv_path is not None else None
 
@@ -264,6 +275,7 @@ def create_live_alx_config(args: argparse.Namespace) -> LiveALXConfig:
         frame_limit=args.frames,
         print_every_s=args.print_every,
         csv_path=args.csv,
+        sdk_error_restart_delay_s=args.sdk_error_restart_delay,
     )
 
 
@@ -467,6 +479,8 @@ def run_live_alx_simulation(
     start_s = clock()
     next_due_s = start_s
     last_print_s = -math.inf
+    sdk_error_since_s: Optional[float] = None
+    sdk_error_restart_requested = False
 
     try:
         bridge.init()
@@ -495,6 +509,22 @@ def run_live_alx_simulation(
             )
             bridge.dispatch(step.command)
             bridge.tick(now)
+            if bridge.sdk_error:
+                if sdk_error_since_s is None:
+                    sdk_error_since_s = now
+                    emit("SDK error detected; waiting for recovery before service restart.")
+                elif (
+                    config.sdk_error_restart_delay_s is not None
+                    and now - sdk_error_since_s >= config.sdk_error_restart_delay_s
+                ):
+                    emit(
+                        "SDK error persisted for "
+                        f"{now - sdk_error_since_s:.1f}s; exiting for systemd restart."
+                    )
+                    sdk_error_restart_requested = True
+                    break
+            else:
+                sdk_error_since_s = None
 
             frame = LiveALXFrame(
                 index=frame_index,
@@ -541,6 +571,8 @@ def run_live_alx_simulation(
         f"summary frames={len(result.frames)} moves={result.move_count} "
         f"stops={result.stop_count} last={result.last}"
     )
+    if sdk_error_restart_requested:
+        raise SystemExit(SDK_ERROR_RESTART_EXIT_CODE)
     return result
 
 
@@ -584,6 +616,15 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser.add_argument("--frames", type=int, default=None, help="Run frame count.")
     parser.add_argument("--stale-timeout", type=float, default=None)
     parser.add_argument("--print-every", type=float, default=None)
+    parser.add_argument(
+        "--sdk-error-restart-delay",
+        type=float,
+        default=None,
+        help=(
+            "Exit for systemd restart after SDK error persists for this many "
+            "seconds. Use config run.sdk_error_restart_delay_s or default 30."
+        ),
+    )
     parser.add_argument("--csv", type=Path, default=None, help="Optional CSV log path.")
     parser.add_argument("--no-csv", action="store_true", default=False,
                         help="Disable CSV logging, including any path from config.")
