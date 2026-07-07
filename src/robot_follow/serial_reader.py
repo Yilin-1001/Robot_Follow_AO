@@ -68,6 +68,21 @@ class ALXG100SerialReader:
         if len(self._buffer) < 10:
             return None
 
+        # --- 手环帧检测（优先于 ALX 帧解析）---
+        if len(self._buffer) >= 12:
+            four_byte_sig = bytes(self._buffer[8:12])
+            declared_len = int.from_bytes(self._buffer[4:6], byteorder="big", signed=False)
+            if declared_len in (0x10, 0x25) and len(self._buffer) >= declared_len:
+                if four_byte_sig == b"\x20\x01\x01\x02" and declared_len == 0x25:
+                    print("[WRISTBAND] ON", flush=True)
+                    del self._buffer[:declared_len]
+                    return None
+                if four_byte_sig == b"\x20\x02\x01\x02" and declared_len == 0x10:
+                    print("[WRISTBAND] OFF", flush=True)
+                    del self._buffer[:declared_len]
+                    return None
+        # --- 手环帧检测结束 ---
+
         command = int.from_bytes(self._buffer[8:10], byteorder="big", signed=False)
         if command == 0x2001:
             frame_len = POSITION_FRAME_LENGTH
