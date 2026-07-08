@@ -1,0 +1,62 @@
+from __future__ import annotations
+
+from robot_follow.alx_g100_protocol import PositionSample
+from robot_follow.serial_reader import ALXG100SerialReader
+
+
+POSITION_FRAME = bytes.fromhex(
+    "FF FF FF FF 00 25 34 7E 20 01 01 02 "
+    "00 00 10 AA 00 00 10 AA 00 00 01 EA "
+    "FF A8 00 25 12 34 00 0C BE 00 00 00 40"
+)
+
+
+def test_position_frame_with_wristband_on_signature_is_not_dropped(capsys):
+    reader = ALXG100SerialReader(port="unused")
+    reader._buffer.extend(POSITION_FRAME)
+
+    sample = reader._try_pop_sample()
+
+    assert isinstance(sample, PositionSample)
+    assert sample.command == 0x2001
+    assert sample.version_id == 0x0102
+    assert sample.anchor_id == 0x000010AA
+    assert sample.tag_id == 0x000010AA
+    assert sample.distance_cm == 0x000001EA
+    assert sample.azimuth_deg == -88
+    assert sample.elevation_deg == 37
+    assert sample.tag_status == 0x1234
+    assert "[WRISTBAND] ON" in capsys.readouterr().out
+
+
+def test_wristband_off_frame_is_still_dropped(capsys):
+    reader = ALXG100SerialReader(port="unused")
+    reader._buffer.extend(
+        bytes.fromhex(
+            "FF FF FF FF 00 10 0A 6B 20 02 01 02 00 00 10 AA"
+        )
+    )
+
+    sample = reader._try_pop_sample()
+
+    assert sample is None
+    assert "[WRISTBAND] OFF" in capsys.readouterr().out
+
+
+def test_serial_read_timeout_does_not_emit_wristband_off(capsys):
+    class FakeSerial:
+        is_open = True
+
+        def __init__(self):
+            self._reads = [b"", b"", POSITION_FRAME]
+
+        def read(self, size):
+            return self._reads.pop(0)
+
+    reader = ALXG100SerialReader(port="unused")
+    reader._serial = FakeSerial()
+
+    sample = next(reader.read_samples())
+
+    assert isinstance(sample, PositionSample)
+    assert "[WRISTBAND] OFF" not in capsys.readouterr().out
