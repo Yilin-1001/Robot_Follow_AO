@@ -16,12 +16,16 @@ from robot_follow.alx_g100_protocol import (
 
 
 class ALXG100SerialReader:
+    WRISTBAND_ON_PRINT_INTERVAL_S = 0.25
+
     def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.05):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self._serial: Optional[serial.Serial] = None
         self._buffer = bytearray()
+        self._wristband_enabled: Optional[bool] = None
+        self._last_wristband_on_print_s = 0.0
 
     def open(self) -> None:
         self._serial = serial.Serial(
@@ -55,7 +59,7 @@ class ALXG100SerialReader:
                 self._buffer.extend(chunk)
             else:
                 if not self._serial.is_open:
-                    print("[WRISTBAND] OFF", flush=True)
+                    self._emit_wristband_off()
                     return
             sample = self._try_pop_sample()
             if sample is not None:
@@ -76,15 +80,13 @@ class ALXG100SerialReader:
         # command/version are 0x2001/0x0102. Emit the marker for the supervisor,
         # but keep parsing the frame as ALX position data.
         if len(self._buffer) >= 12:
-            four_byte_sig = bytes(self._buffer[8:12])
+            if self._pop_wristband_off_from_buffer():
+                return None
             declared_len = int.from_bytes(self._buffer[4:6], byteorder="big", signed=False)
-            if declared_len in (0x10, 0x25) and len(self._buffer) >= declared_len:
-                if four_byte_sig == b"\x20\x01\x01\x02" and declared_len == 0x25:
-                    print("[WRISTBAND] ON", flush=True)
-                if four_byte_sig == b"\x20\x02\x01\x02" and declared_len == 0x10:
-                    print("[WRISTBAND] OFF", flush=True)
-                    del self._buffer[:declared_len]
-                    return None
+            if declared_len == 0x25 and len(self._buffer) >= declared_len:
+                four_byte_sig = bytes(self._buffer[8:12])
+                if four_byte_sig == b"\x20\x01\x01\x02":
+                    self._emit_wristband_on()
 
         command = int.from_bytes(self._buffer[8:10], byteorder="big", signed=False)
         if command == 0x2001:
@@ -104,3 +106,41 @@ class ALXG100SerialReader:
             return parse_frame(raw, timestamp=time.monotonic())
         except ALXG100FrameError:
             return None
+
+    def _pop_wristband_off_from_buffer(self) -> bool:
+        search_at = 0
+        off_signature = b"\x20\x02\x01\x02"
+        while True:
+            frame_index = self._buffer.find(FRAME_HEADER, search_at)
+            if frame_index < 0:
+                return False
+            if len(self._buffer) < frame_index + 12:
+                return False
+            declared_len = int.from_bytes(
+                self._buffer[frame_index + 4:frame_index + 6],
+                byteorder="big",
+                signed=False,
+            )
+            if (
+                declared_len == 0x10
+                and len(self._buffer) >= frame_index + declared_len
+                and bytes(self._buffer[frame_index + 8:frame_index + 12]) == off_signature
+            ):
+                self._emit_wristband_off()
+                del self._buffer[:frame_index + declared_len]
+                return True
+            search_at = frame_index + 4
+
+    def _emit_wristband_on(self) -> None:
+        now = time.monotonic()
+        if (
+            self._wristband_enabled is not True
+            or now - self._last_wristband_on_print_s >= self.WRISTBAND_ON_PRINT_INTERVAL_S
+        ):
+            print("[WRISTBAND] ON", flush=True)
+            self._last_wristband_on_print_s = now
+        self._wristband_enabled = True
+
+    def _emit_wristband_off(self) -> None:
+        print("[WRISTBAND] OFF", flush=True)
+        self._wristband_enabled = False
