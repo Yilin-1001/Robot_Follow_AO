@@ -46,10 +46,10 @@ def build_runtime_from_config(config_path: Path) -> AORadarRuntime:
     radar_manager = RadarServiceManager(config.radar)
     cloud_source = FastLIOPointCloudSource()
 
-    # Use a simplified radar pipeline that processes point clouds
+    # Use the AO radar pipeline directly (FastLIOPointCloudSource now
+    # returns AO PointCloudFrame with np.ndarray)
     from robot_follow.ao.app.config import AppConfig
     from robot_follow.ao.radar.pipeline import process_radar_frame
-    from robot_follow.ao.core.types import PointCloudFrame as AOPointCloudFrame
 
     app_config = AppConfig.default()
 
@@ -65,18 +65,8 @@ def build_runtime_from_config(config_path: Path) -> AORadarRuntime:
                 from robot_follow.ao.core.types import ObstacleReport
                 return ObstacleReport.invalid(time.monotonic(), reason="cloud_missing")
 
-            # Convert FastLIOPointCloudSource frame to AO PointCloudFrame
-            ao_frame = AOPointCloudFrame(
-                timestamp=cloud.timestamp,
-                frame_id="body",
-                points_xyz=_list_to_array(cloud.points),
-                valid=True,
-                empty_is_clear=True,
-                reason="",
-            )
-
             result = process_radar_frame(
-                ao_frame,
+                cloud,
                 config=self._config,
                 now_s=time.monotonic(),
             )
@@ -96,14 +86,6 @@ def build_runtime_from_config(config_path: Path) -> AORadarRuntime:
         planner=planner,
         bridge=bridge,
     )
-
-
-def _list_to_array(points: list[tuple[float, float, float]]) -> "numpy.ndarray":
-    """Convert list of (x, y, z) tuples to numpy array."""
-    import numpy as np
-    if not points:
-        return np.empty((0, 3), dtype=np.float64)
-    return np.array(points, dtype=np.float64)
 
 
 def main(argv: list[str] | None = None) -> int:
