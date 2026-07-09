@@ -25,6 +25,7 @@ USB 串口，新架构必须保证同一个串口只有一个读取者。
 - 保持当前 Robot Follow 的 `MotionCommand` 语义，不把历史 MotionCommand 排队处理。
 - 直接复制旧版 AO 的 radar / avoidance 核心模块到当前项目，避免运行时依赖失败版本目录。
 - 为每帧记录足够的 age / timing 字段，便于定位延迟。
+- 通过 YAML 配置文件修改现场参数，不为了调参修改 `src/`。
 
 ## 3. 非目标
 
@@ -349,9 +350,108 @@ src/robot_follow/ao/
 - `FollowPipeline`
 - `G1MotionBridge`
 
-## 11. 错误处理
+## 11. 配置策略
 
-### 11.1 串口错误
+第一版主配置文件：
+
+```text
+configs/jetson_g1_ao_radar.yaml
+```
+
+该文件必须从现有 `configs/jetson_g1_safe.yaml` 扩展而来，保留现有 Robot Follow 配置语义：
+
+```text
+alx
+g1
+safety
+follow
+filter
+run
+```
+
+AO / Radar 只追加新 section，不替换现有 section 的含义：
+
+```text
+wristband
+radar_service
+fast_lio
+transform
+roi
+self_filter
+zones
+avoidance
+ao
+logging
+```
+
+第一版不使用 YAML include。配置文件应是一个完整文件，便于现场复制、审查和修改。
+
+配置原则：
+
+- `src/` 只定义默认值、dataclass/schema、解析和校验逻辑。
+- `configs/jetson_g1_ao_radar.yaml` 承担现场参数。
+- CLI 参数只做临时覆盖。
+- 未知配置 key 必须报错，避免拼写错误静默失效。
+- 修改跟随距离、速度上限、G1 网卡、Livox/FAST-LIO 启动命令、点云 topic、ROI、self filter、zone、avoidance、超时预算，不需要改 `src/`。
+
+关键配置形状：
+
+```yaml
+alx:
+  port: /dev/ttyUSB0
+  baudrate: 115200
+  hz: 40.0
+  stale_timeout_s: 0.5
+
+g1:
+  net_iface: eth0
+  max_vx: 0.05
+  max_vy: 0.15
+  max_omega: 0.10
+  yaw_sign: 1
+
+safety:
+  data_timeout_s: 0.5
+  min_safe_distance_m: 0.5
+
+follow:
+  target_distance_m: 1.2
+
+filter:
+  alpha: 0.35
+
+run:
+  hz: 20.0
+  command_timeout_s: 0.2
+  print_every_s: 0.5
+
+wristband:
+  enabled: true
+  on_token: "ON"
+  off_token: "OFF"
+  heartbeat_timeout_s: 3.0
+
+radar_service:
+  idle_timeout_s: 10.0
+  cloud_ready_timeout_s: 10.0
+  livox_command: []
+  fast_lio_command: []
+
+fast_lio:
+  pointcloud_topic: /cloud_registered_body
+  expected_frame_id: body
+  max_cloud_age_s: 0.5
+
+ao:
+  max_ao_process_ms: 20.0
+  max_g1_dispatch_ms: 30.0
+  warn_loop_dt_ms: 75.0
+  hard_loop_dt_ms: 150.0
+```
+
+## 12. 错误处理
+
+### 12.1 串口错误
 
 串口错误或长期无数据时：
 
@@ -361,7 +461,7 @@ G1 立即 stop
 RadarServiceManager 进入 idle 计时
 ```
 
-### 11.2 雷达启动失败
+### 12.2 雷达启动失败
 
 Livox 或 FAST-LIO 启动失败时：
 
@@ -371,7 +471,7 @@ safe command = stop(reason="radar_start_failed")
 记录 radar_state 和错误原因
 ```
 
-### 11.3 点云超时
+### 12.3 点云超时
 
 点云超过配置阈值：
 
@@ -380,7 +480,7 @@ safe command = stop(reason="radar_timeout")
 不消费旧点云
 ```
 
-### 11.4 G1 输出异常
+### 12.4 G1 输出异常
 
 G1 dispatch 异常或 SDK timeout：
 
@@ -390,7 +490,7 @@ safe command = stop(reason="sdk_error" 或 "sdk_timeout")
 必要时退出，让外部服务重启
 ```
 
-## 12. 验收标准
+## 13. 验收标准
 
 第一版设计验收标准：
 
@@ -406,8 +506,10 @@ safe command = stop(reason="sdk_error" 或 "sdk_timeout")
 10. 日志能定位 ALX、command、cloud、AO、G1 dispatch 的延迟来源。
 11. Livox / FAST-LIO 启动期间不缓存 move command，radar ready 后只处理最新未过期 command。
 12. safe command 输出前检查 command age、cloud age 和 AO 处理耗时，任一超预算都必须 stop 或 fault。
+13. 存在完整主配置 `configs/jetson_g1_ao_radar.yaml`，并从 `configs/jetson_g1_safe.yaml` 扩展现有 alx/g1/safety/follow/filter/run 参数。
+14. 修改 AO/Radar/G1/Follow 现场参数不需要修改 `src/`。
 
-## 13. 待实现前必须确认的接口细节
+## 14. 待实现前必须确认的接口细节
 
 以下属于实现计划阶段需要细化的内容，不改变本设计方向：
 
