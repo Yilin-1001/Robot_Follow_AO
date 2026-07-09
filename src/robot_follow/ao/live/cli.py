@@ -1,4 +1,10 @@
-"""CLI entrypoint for robot-follow-ao-radar."""
+"""AO radar CLI entrypoint with real G1 guard.
+
+Provides the `robot-follow-ao-radar` console script that:
+1. Loads AO radar config from YAML
+2. Validates real G1 output confirmation
+3. Builds and runs the AO radar runtime
+"""
 
 from __future__ import annotations
 
@@ -11,18 +17,17 @@ from robot_follow.ao.config import load_ao_radar_config
 from robot_follow.ao.live.fast_lio_source import FastLIOPointCloudSource
 from robot_follow.ao.live.radar_service_manager import RadarServiceManager
 from robot_follow.ao.live.runtime import AORadarRuntime
-from robot_follow.core import FollowConfig, FollowController, FollowPipeline, SafetyConfig, SafetyManager, TargetFilter
+from robot_follow.core import FollowPipeline, SafetyManager, TargetFilter
+from robot_follow.core.follow_controller import FollowController, FollowConfig
+from robot_follow.core.safety import SafetyConfig
 from robot_follow.real.alx_source import ALXLiveSource
 from robot_follow.real.g1.bridge import G1MotionBridge
 
 
 def build_runtime_from_config(config_path: Path) -> AORadarRuntime:
-    """Build an AO radar runtime from a config file.
+    """Build the AO radar runtime from a config file.
 
-    Raises
-    ------
-    ValueError
-        If real G1 output is requested without explicit confirmation.
+    Raises ValueError if real G1 output is requested but not confirmed.
     """
     config = load_ao_radar_config(config_path)
     if (
@@ -40,11 +45,47 @@ def build_runtime_from_config(config_path: Path) -> AORadarRuntime:
     )
     radar_manager = RadarServiceManager(config.radar)
     cloud_source = FastLIOPointCloudSource()
-    from robot_follow.ao.radar.pipeline import RadarPipeline
 
-    radar_pipeline = RadarPipeline()
+    # Use a simplified radar pipeline that processes point clouds
+    from robot_follow.ao.app.config import AppConfig
+    from robot_follow.ao.radar.pipeline import process_radar_frame
+    from robot_follow.ao.core.types import PointCloudFrame as AOPointCloudFrame
+
+    app_config = AppConfig.default()
+
+    class RadarPipelineAdapter:
+        """Adapter to process FastLIO point clouds through AO radar pipeline."""
+
+        def __init__(self, app_config: AppConfig):
+            self._config = app_config
+
+        def process(self, cloud):
+            """Process a PointCloudFrame and return an ObstacleReport."""
+            if cloud is None:
+                from robot_follow.ao.core.types import ObstacleReport
+                return ObstacleReport.invalid(time.monotonic(), reason="cloud_missing")
+
+            # Convert FastLIOPointCloudSource frame to AO PointCloudFrame
+            ao_frame = AOPointCloudFrame(
+                timestamp=cloud.timestamp,
+                frame_id="body",
+                points_xyz=_list_to_array(cloud.points),
+                valid=True,
+                empty_is_clear=True,
+                reason="",
+            )
+
+            result = process_radar_frame(
+                ao_frame,
+                config=self._config,
+                now_s=time.monotonic(),
+            )
+            return result.report
+
+    radar_pipeline = RadarPipelineAdapter(app_config)
     planner = AvoidancePlanner()
-    bridge = G1MotionBridge()
+    bridge = G1MotionBridge(network_interface="enp2s0")
+
     return AORadarRuntime(
         config=config,
         alx_source=alx_source,
@@ -57,26 +98,45 @@ def build_runtime_from_config(config_path: Path) -> AORadarRuntime:
     )
 
 
+def _list_to_array(points: list[tuple[float, float, float]]) -> "numpy.ndarray":
+    """Convert list of (x, y, z) tuples to numpy array."""
+    import numpy as np
+    if not points:
+        return np.empty((0, 3), dtype=np.float64)
+    return np.array(points, dtype=np.float64)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main entrypoint for robot-follow-ao-radar CLI."""
-    parser = argparse.ArgumentParser(description="Robot Follow AO Radar Runtime")
-    parser.add_argument("--config", type=Path, default=Path("configs/jetson_g1_safe.yaml"))
+    parser = argparse.ArgumentParser(
+        prog="robot-follow-ao-radar",
+        description="Run Robot Follow AO radar live runtime",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/jetson_g1_safe.yaml"),
+        help="Path to YAML config file",
+    )
     args = parser.parse_args(argv)
+
     runtime = build_runtime_from_config(args.config)
     runtime.alx_source.start()
     runtime.cloud_source.start()
+
     period_s = 1.0 / runtime.config.latency.ao_output_loop_hz
     try:
         while True:
             started = time.monotonic()
             runtime.tick()
             elapsed = time.monotonic() - started
-            time.sleep(max(0.0, period_s - elapsed))
+            sleep_time = max(0.0, period_s - elapsed)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
     finally:
         runtime.cloud_source.stop()
         runtime.alx_source.stop()
         runtime.radar_manager.stop()
+        runtime.bridge.close()
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    return 0
