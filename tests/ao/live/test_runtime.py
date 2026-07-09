@@ -14,6 +14,12 @@ from robot_follow.core.types import MotionCommand, TargetSample
 
 
 @dataclass(frozen=True)
+class FakeWristbandState:
+    enabled: Optional[bool] = None
+    updated_at: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class FakeSnapshot:
     timestamp: float
     distance_m: float = 1.0
@@ -25,11 +31,15 @@ class FakeSnapshot:
 
 
 class FakeALXSource:
-    def __init__(self, snapshot):
+    def __init__(self, snapshot, wristband_state: Optional[FakeWristbandState] = None):
         self._snapshot = snapshot
+        self._wristband_state = wristband_state or FakeWristbandState(enabled=None, updated_at=None)
 
     def snapshot(self):
         return self._snapshot
+
+    def wristband_state(self) -> FakeWristbandState:
+        return self._wristband_state
 
 
 class FakeRadarManager:
@@ -37,6 +47,7 @@ class FakeRadarManager:
         self.position_times = []
         self.ensure_count = 0
         self.stop_checks = []
+        self.stop_calls = 0
 
     def on_position_frame(self, timestamp: float) -> None:
         self.position_times.append(timestamp)
@@ -46,6 +57,9 @@ class FakeRadarManager:
 
     def stop_if_idle(self, *, now: float) -> None:
         self.stop_checks.append(now)
+
+    def stop(self) -> None:
+        self.stop_calls += 1
 
 
 class FakeCloudSource:
@@ -102,7 +116,10 @@ def test_fresh_position_starts_radar_and_dispatches_safe_command() -> None:
     radar_manager = FakeRadarManager()
     runtime = AORadarRuntime(
         config=config(),
-        alx_source=FakeALXSource(FakeSnapshot(timestamp=99.95)),
+        alx_source=FakeALXSource(
+            FakeSnapshot(timestamp=99.95),
+            wristband_state=FakeWristbandState(enabled=True, updated_at=99.9),
+        ),
         pipeline=FakePipeline(),
         radar_manager=radar_manager,
         cloud_source=FakeCloudSource(PointCloudFrame(timestamp=99.9, points=[])),
@@ -128,7 +145,10 @@ def test_stale_position_stops_g1_and_does_not_start_radar() -> None:
     radar_manager = FakeRadarManager()
     runtime = AORadarRuntime(
         config=config(),
-        alx_source=FakeALXSource(FakeSnapshot(timestamp=99.0)),
+        alx_source=FakeALXSource(
+            FakeSnapshot(timestamp=99.0),
+            wristband_state=FakeWristbandState(enabled=True, updated_at=99.9),
+        ),
         pipeline=FakePipeline(),
         radar_manager=radar_manager,
         cloud_source=FakeCloudSource(PointCloudFrame(timestamp=99.9, points=[])),
@@ -149,11 +169,15 @@ def test_stale_position_stops_g1_and_does_not_start_radar() -> None:
 
 def test_missing_or_stale_cloud_stops_before_ao_planner() -> None:
     bridge = FakeBridge()
+    radar_manager = FakeRadarManager()
     runtime = AORadarRuntime(
         config=config(),
-        alx_source=FakeALXSource(FakeSnapshot(timestamp=99.95)),
+        alx_source=FakeALXSource(
+            FakeSnapshot(timestamp=99.95),
+            wristband_state=FakeWristbandState(enabled=True, updated_at=99.9),
+        ),
         pipeline=FakePipeline(),
-        radar_manager=FakeRadarManager(),
+        radar_manager=radar_manager,
         cloud_source=FakeCloudSource(None),
         radar_pipeline=FakeRadarPipeline(),
         planner=FakePlanner(),
@@ -177,11 +201,15 @@ class SlowClock:
 
 def test_slow_ao_result_is_discarded() -> None:
     bridge = FakeBridge()
+    radar_manager = FakeRadarManager()
     runtime = AORadarRuntime(
         config=config(),
-        alx_source=FakeALXSource(FakeSnapshot(timestamp=99.95)),
+        alx_source=FakeALXSource(
+            FakeSnapshot(timestamp=99.95),
+            wristband_state=FakeWristbandState(enabled=True, updated_at=99.9),
+        ),
         pipeline=FakePipeline(),
-        radar_manager=FakeRadarManager(),
+        radar_manager=radar_manager,
         cloud_source=FakeCloudSource(PointCloudFrame(timestamp=99.9, points=[])),
         radar_pipeline=FakeRadarPipeline(),
         planner=FakePlanner(),
@@ -195,13 +223,130 @@ def test_slow_ao_result_is_discarded() -> None:
     assert bridge.commands[-1].reason == "ao_timeout"
 
 
-def test_cloud_freshness_uses_received_at_when_available() -> None:
+def test_wristband_off_stops_radar_and_does_not_start() -> None:
+    """手环OFF时，点云不应启动。即使位置数据有效，也不应该ensure_running。"""
     bridge = FakeBridge()
+    radar_manager = FakeRadarManager()
     runtime = AORadarRuntime(
         config=config(),
-        alx_source=FakeALXSource(FakeSnapshot(timestamp=99.95)),
+        alx_source=FakeALXSource(
+            FakeSnapshot(timestamp=99.95),
+            wristband_state=FakeWristbandState(enabled=False, updated_at=99.9),
+        ),
         pipeline=FakePipeline(),
-        radar_manager=FakeRadarManager(),
+        radar_manager=radar_manager,
+        cloud_source=FakeCloudSource(PointCloudFrame(timestamp=99.9, points=[])),
+        radar_pipeline=FakeRadarPipeline(),
+        planner=FakePlanner(),
+        bridge=bridge,
+        clock=lambda: 100.0,
+    )
+
+    runtime.tick()
+
+    assert radar_manager.ensure_count == 0, "手环OFF时不应启动点云"
+    assert radar_manager.stop_calls == 1, "手环OFF时应立即调用stop()"
+    assert bridge.commands[-1].kind == "stop"
+    assert bridge.commands[-1].reason == "wristband_off"
+
+
+def test_wristband_on_with_valid_position_starts_radar() -> None:
+    """手环ON + 位置有效时，点云应正常启动。"""
+    bridge = FakeBridge()
+    radar_manager = FakeRadarManager()
+    runtime = AORadarRuntime(
+        config=config(),
+        alx_source=FakeALXSource(
+            FakeSnapshot(timestamp=99.95),
+            wristband_state=FakeWristbandState(enabled=True, updated_at=99.9),
+        ),
+        pipeline=FakePipeline(),
+        radar_manager=radar_manager,
+        cloud_source=FakeCloudSource(PointCloudFrame(timestamp=99.9, points=[])),
+        radar_pipeline=FakeRadarPipeline(),
+        planner=FakePlanner(),
+        bridge=bridge,
+        clock=lambda: 100.0,
+    )
+
+    runtime.tick()
+
+    assert radar_manager.ensure_count == 1, "手环ON时应启动点云"
+    assert bridge.commands[-1].kind == "move"
+
+
+def test_wristband_unknown_does_not_start_radar() -> None:
+    """手环信号从未到达时（enabled=None），点云应保持停止。"""
+    bridge = FakeBridge()
+    radar_manager = FakeRadarManager()
+    runtime = AORadarRuntime(
+        config=config(),
+        alx_source=FakeALXSource(
+            FakeSnapshot(timestamp=99.95),
+            wristband_state=FakeWristbandState(enabled=None, updated_at=None),
+        ),
+        pipeline=FakePipeline(),
+        radar_manager=radar_manager,
+        cloud_source=FakeCloudSource(PointCloudFrame(timestamp=99.9, points=[])),
+        radar_pipeline=FakeRadarPipeline(),
+        planner=FakePlanner(),
+        bridge=bridge,
+        clock=lambda: 100.0,
+    )
+
+    runtime.tick()
+
+    assert radar_manager.ensure_count == 0, "手环状态未知时不应启动点云"
+    assert bridge.commands[-1].kind == "stop"
+    assert bridge.commands[-1].reason == "wristband_unknown"
+
+
+def test_wristband_on_to_off_stops_radar_during_runtime() -> None:
+    """运行中手环从ON变OFF，点云应停止。"""
+    bridge = FakeBridge()
+    radar_manager = FakeRadarManager()
+    runtime = AORadarRuntime(
+        config=config(),
+        alx_source=FakeALXSource(
+            FakeSnapshot(timestamp=99.95),
+            wristband_state=FakeWristbandState(enabled=True, updated_at=99.9),
+        ),
+        pipeline=FakePipeline(),
+        radar_manager=radar_manager,
+        cloud_source=FakeCloudSource(PointCloudFrame(timestamp=99.9, points=[])),
+        radar_pipeline=FakeRadarPipeline(),
+        planner=FakePlanner(),
+        bridge=bridge,
+        clock=lambda: 100.0,
+    )
+
+    runtime.tick()
+    assert radar_manager.ensure_count == 1, "手环ON时应启动点云"
+
+    # 模拟手环变为OFF
+    runtime.alx_source = FakeALXSource(
+        FakeSnapshot(timestamp=99.95),
+        wristband_state=FakeWristbandState(enabled=False, updated_at=100.0),
+    )
+    runtime.tick()
+
+    assert radar_manager.ensure_count == 1, "手环OFF后不应再调用ensure_running"
+    assert radar_manager.stop_calls == 1, "手环OFF时应调用stop()"
+    assert bridge.commands[-1].kind == "stop"
+    assert bridge.commands[-1].reason == "wristband_off"
+
+
+def test_cloud_freshness_uses_received_at_when_available() -> None:
+    bridge = FakeBridge()
+    radar_manager = FakeRadarManager()
+    runtime = AORadarRuntime(
+        config=config(),
+        alx_source=FakeALXSource(
+            FakeSnapshot(timestamp=99.95),
+            wristband_state=FakeWristbandState(enabled=True, updated_at=99.9),
+        ),
+        pipeline=FakePipeline(),
+        radar_manager=radar_manager,
         cloud_source=FakeCloudSource(PointCloudFrame(timestamp=1.0, points=[], received_at_s=99.9)),
         radar_pipeline=FakeRadarPipeline(),
         planner=FakePlanner(),

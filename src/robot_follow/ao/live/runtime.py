@@ -77,6 +77,26 @@ class AORadarRuntime:
         now = self.clock()
         loop_dt_ms = 0.0 if self._previous_tick_at is None else (now - self._previous_tick_at) * 1000.0
         self._previous_tick_at = now
+
+        # 手环门控检查 - 必须最先执行
+        wristband_state = self._get_wristband_state()
+        if wristband_state is False:
+            # 手环OFF - 立即停止点云
+            self.radar_manager.stop()
+            return self._dispatch_stop(
+                "wristband_off",
+                now=now,
+                loop_dt_ms=loop_dt_ms,
+            )
+        if wristband_state is None:
+            # 手环状态未知 - 不启动点云，保持停止
+            return self._dispatch_stop(
+                "wristband_unknown",
+                now=now,
+                loop_dt_ms=loop_dt_ms,
+            )
+
+        # 手环ON - 继续正常的控制流程
         snapshot = self.alx_source.snapshot()
         if snapshot is None or getattr(snapshot, "error", None):
             return self._dispatch_stop(
@@ -225,16 +245,20 @@ class AORadarRuntime:
         return getattr(state, "value", str(state))
 
     def _wristband_gate_state(self) -> str:
-        wristband_state = getattr(self.alx_source, "wristband_state", None)
-        if not callable(wristband_state):
-            return "unknown"
-        state = wristband_state()
-        enabled = getattr(state, "enabled", None)
+        enabled = self._get_wristband_state()
         if enabled is True:
             return "on"
         if enabled is False:
             return "off"
         return "unknown"
+
+    def _get_wristband_state(self) -> bool | None:
+        """Return the wristband enabled state: True=ON, False=OFF, None=unknown."""
+        wristband_state = getattr(self.alx_source, "wristband_state", None)
+        if not callable(wristband_state):
+            return None
+        state = wristband_state()
+        return getattr(state, "enabled", None)
 
     def _tick_bridge(self, now: float) -> None:
         tick = getattr(self.bridge, "tick", None)
