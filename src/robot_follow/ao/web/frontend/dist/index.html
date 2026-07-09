@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>G1 Mid360 AO</title>
+    <script type="module" crossorigin src="/assets/index-Cjx08daj.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-I1Mr2Jyf.css">
+  </head>
+  <body>
+    <main class="app">
+      <section class="viewer" aria-label="Robot-centered point cloud">
+        <canvas id="bev" width="900" height="900"></canvas>
+      </section>
+      <aside class="panel" aria-label="Radar status">
+        <h1>G1 Mid360 AO</h1>
+        <dl>
+          <dt>Status</dt><dd id="status">connecting</dd>
+          <dt>Frame</dt><dd id="frame-id">-</dd>
+          <dt>Radar age</dt><dd id="radar-age">-</dd>
+          <dt>Raw points</dt><dd id="raw-count">-</dd>
+          <dt>Filtered points</dt><dd id="filtered-count">-</dd>
+          <dt>Decision</dt><dd id="decision-kind">-</dd>
+          <dt>Reason</dt><dd id="decision-reason">-</dd>
+          <dt>Safe command</dt><dd id="safe-command">-</dd>
+          <dt>Selected target</dt><dd id="selected-target">none</dd>
+        </dl>
+        <div id="zones" class="zones"></div>
+      </aside>
+    </main>
+  </body>
+</html>
