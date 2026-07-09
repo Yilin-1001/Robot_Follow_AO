@@ -146,6 +146,8 @@ Robot Follow 现有逻辑已经是 latest snapshot + per-frame dispatch：
 - point cloud 只保存最新一帧，新点云覆盖旧点云。
 - AO tick 不消费历史 command，不追赶延迟帧。
 - 任何过期输入都转成 stop。
+- RadarServiceManager 启动 Livox / FAST-LIO 期间不缓存 move command。
+- radar ready 后第一帧必须重新读取 latest raw command，并重新通过 command age 检查。
 
 延迟处理规则：
 
@@ -167,6 +169,41 @@ Livox / FAST-LIO 未 ready:
 
 G1 dispatch 过慢或 SDK timeout:
   G1 bridge watchdog 输出 stop / fault
+```
+
+safe command 输出前必须满足：
+
+```text
+command_age_s <= max_command_age_s
+cloud_age_s <= max_cloud_age_s
+ao_process_ms <= max_ao_process_ms
+```
+
+第一版建议预算：
+
+```text
+ao_output_loop_hz = 20.0
+max_command_age_s = 0.2
+max_cloud_age_s = 0.5
+max_ao_process_ms = 20.0
+max_g1_dispatch_ms = 30.0
+warn_loop_dt_ms = 75.0
+hard_loop_dt_ms = 150.0
+```
+
+超时降级规则：
+
+```text
+AO 处理超过 max_ao_process_ms:
+  safe command = stop(reason="ao_timeout")
+
+G1 dispatch 超过 max_g1_dispatch_ms:
+  记录 g1_dispatch_ms
+  连续超时后进入 stop / fault
+
+loop_dt 超过 hard_loop_dt_ms:
+  下一帧不得追赶历史输入
+  只能读取最新 command / 最新点云，或输出 stop
 ```
 
 每帧必须记录：
@@ -367,6 +404,8 @@ safe command = stop(reason="sdk_error" 或 "sdk_timeout")
 8. MotionCommand 不排队，过期 command 不补处理。
 9. 点云不排队，过期点云不补处理。
 10. 日志能定位 ALX、command、cloud、AO、G1 dispatch 的延迟来源。
+11. Livox / FAST-LIO 启动期间不缓存 move command，radar ready 后只处理最新未过期 command。
+12. safe command 输出前检查 command age、cloud age 和 AO 处理耗时，任一超预算都必须 stop 或 fault。
 
 ## 13. 待实现前必须确认的接口细节
 
@@ -378,4 +417,3 @@ safe command = stop(reason="sdk_error" 或 "sdk_timeout")
 - `/cloud_registered_body` 的 frame_id 和坐标约定。
 - G1 网卡名、速度上限和 yaw sign。
 - 真实输出 CLI 确认参数命名。
-
