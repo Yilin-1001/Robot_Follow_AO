@@ -2,9 +2,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Dict, TypeVar
 
-from robot_follow.main import ConfigMapping, load_yaml_config
+import yaml
+
+
+ConfigMapping = Dict[str, Any]
+
+
+def load_yaml_config(path: Path) -> ConfigMapping:
+    """Load a project YAML config file."""
+    text = path.read_text(encoding="utf-8")
+    loaded = yaml.safe_load(text)
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"config file {path} must be a mapping")
+    return loaded
 
 
 @dataclass(frozen=True)
@@ -39,6 +53,7 @@ class AOOutputConfig:
     mode: str = "g1"
     require_real_g1_confirmation: bool = True
     confirm_real_g1: bool = False
+    network_interface: str = "enp2s0"
 
 
 @dataclass(frozen=True)

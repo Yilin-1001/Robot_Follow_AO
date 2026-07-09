@@ -18,6 +18,7 @@ def test_loads_default_config_values_from_empty_mapping(tmp_path: Path) -> None:
     assert config.latency.max_command_age_s == 0.2
     assert config.latency.max_cloud_age_s == 0.5
     assert config.output.require_real_g1_confirmation is True
+    assert config.output.network_interface == "enp2s0"
 
 
 def test_rejects_unknown_ao_section_key(tmp_path: Path) -> None:
@@ -54,7 +55,8 @@ def test_loads_runtime_overrides(tmp_path: Path) -> None:
         "    hard_loop_dt_ms: 150.0\n"
         "  output:\n"
         "    mode: g1\n"
-        "    confirm_real_g1: true\n",
+        "    confirm_real_g1: true\n"
+        "    network_interface: eth0\n",
         encoding="utf-8",
     )
 
@@ -67,3 +69,4 @@ def test_loads_runtime_overrides(tmp_path: Path) -> None:
     assert config.latency.ao_output_loop_hz == 20.0
     assert config.output.mode == "g1"
     assert config.output.confirm_real_g1 is True
+    assert config.output.network_interface == "eth0"

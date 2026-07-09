@@ -84,7 +84,7 @@ def build_runtime_from_config(config_path: Path) -> AORadarRuntime:
 
     radar_pipeline = RadarPipelineAdapter(app_config)
     planner = AvoidancePlanner()
-    bridge = G1MotionBridge(network_interface="enp2s0")
+    bridge = G1MotionBridge(network_interface=config.output.network_interface)
 
     return AORadarRuntime(
         config=config,
