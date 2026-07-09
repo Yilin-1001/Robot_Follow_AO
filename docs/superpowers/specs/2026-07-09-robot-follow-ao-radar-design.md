@@ -186,13 +186,14 @@ G1 dispatch 过慢或 SDK timeout:
   G1 bridge watchdog 输出 stop / fault
 ```
 
-safe command 输出前必须满足：
+safe command 输出前必须满足输入年龄预算：
 
 ```text
 command_age_s <= max_command_age_s
 cloud_age_s <= max_cloud_age_s
-ao_process_ms <= max_ao_process_ms
 ```
+
+AO 计算耗时在计算完成后检查。如果 `ao_process_ms > max_ao_process_ms`，本次 AO 结果必须丢弃，并输出 `stop(reason="ao_timeout")`，不能把超时计算得到的历史 safe command 发给 G1。
 
 第一版建议预算：
 
@@ -286,10 +287,13 @@ idle_timeout_s = 5.0
 停止顺序：
 
 ```text
-1. 先确保 G1 已收到 stop。
-2. 停 FAST-LIO。
-3. 停 Livox ROS2 driver。
+1. AO runtime 先向 G1 dispatch stop。
+2. AO runtime 调用 RadarServiceManager.stop()。
+3. RadarServiceManager 停 FAST-LIO。
+4. RadarServiceManager 停 Livox ROS2 driver。
 ```
+
+`RadarServiceManager` 本身不直接控制 G1。G1 stop、G1 dispatch、G1 shutdown 由 AO runtime / G1MotionBridge 负责。
 
 ## 8. AO 避障策略
 
@@ -376,10 +380,6 @@ src/robot_follow/ao/
     command_envelope.py
       MotionCommand 外层实时性元数据。
 
-  serial/
-    combined_source.py
-      同一个 USB 串口读取者，解析 ALX position frame，并从位置帧新鲜度 / 显式 OFF 帧维护 wristband gate。
-
   radar/
     ...
 
@@ -390,10 +390,14 @@ src/robot_follow/ao/
 现有 Robot Follow 模块继续承担：
 
 - ALX protocol parsing where reusable。
+- `ALXG100SerialReader`
+- `ALXLiveSource`
 - `TargetSample`
 - `MotionCommand`
 - `FollowPipeline`
 - `G1MotionBridge`
+
+第一版不新增 `combined_source.py`。同一个 USB 串口继续由现有 `ALXG100SerialReader` / `ALXLiveSource` 路径读取；后续只扩展它们，把当前实测正确的 position frame / 显式 OFF 帧解析结果暴露为结构化 `wristband_gate` 状态。
 
 ## 11. 配置策略
 
@@ -553,7 +557,7 @@ safe command = stop(reason="sdk_error" 或 "sdk_timeout")
 10. 点云不排队，过期点云不补处理。
 11. 日志能定位 ALX、command、cloud、AO、G1 dispatch 的延迟来源。
 12. Livox / FAST-LIO 启动期间不缓存 move command，radar ready 后只处理最新未过期 command。
-13. safe command 输出前检查 command age、cloud age 和 AO 处理耗时，任一超预算都必须 stop 或 fault。
+13. safe command 输出前检查 command age 和 cloud age；AO 处理完成后检查 AO 耗时，任一超预算都必须 stop 或 fault。
 14. 存在完整主配置 `configs/jetson_g1_ao_radar.yaml`，并从 `configs/jetson_g1_safe.yaml` 扩展现有 alx/g1/safety/follow/filter/run 参数。
 15. 修改 AO/Radar/G1/Follow 现场参数不需要修改 `src/`。
 
