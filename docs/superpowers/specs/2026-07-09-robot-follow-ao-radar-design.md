@@ -20,8 +20,8 @@ USB 串口，新架构必须保证同一个串口只有一个读取者。
 
 - 使用 `robot_followao_radar` Python 环境运行。
 - 直接接入 Livox 和 FAST-LIO，使用 `/cloud_registered_body` 点云做 AO 避障。
-- 手环 ON 后直接跑 `ALX 跟随命令 + 雷达 AO 避障 + G1 输出`。
-- 手环 OFF 后立即停止 G1 运动，并在 10 秒无有效运动需求后停止 FAST-LIO 和 Livox，释放雷达。
+- 解析到新鲜 ALX 位置帧后视为手环已打开，并直接跑 `ALX 跟随命令 + 雷达 AO 避障 + G1 输出`。
+- 解析到显式 OFF 帧或位置帧超时后停止 G1 运动，并在 10 秒无有效运动需求后停止 FAST-LIO 和 Livox，释放雷达。
 - 保持当前 Robot Follow 的 `MotionCommand` 语义，不把历史 MotionCommand 排队处理。
 - 直接复制旧版 AO 的 radar / avoidance 核心模块到当前项目，避免运行时依赖失败版本目录。
 - 为每帧记录足够的 age / timing 字段，便于定位延迟。
@@ -42,8 +42,8 @@ USB 串口，新架构必须保证同一个串口只有一个读取者。
 ```text
 USB serial
   -> AO follow main process
-      -> wristband ON/OFF parser
       -> ALX position parser
+      -> wristband gate from ALX position freshness / explicit OFF frame
       -> Robot Follow pipeline
       -> RadarServiceManager
       -> FAST-LIO latest point cloud
@@ -78,7 +78,7 @@ CommandEnvelope + ObstacleReport
 
 ```text
 1. AO follow 主进程持续读取同一个 USB 串口。
-2. 读到 wristband ON。
+2. 解析到新鲜 ALX position frame，视为 wristband enabled。
 3. ALX 数据有效时，Robot Follow pipeline 生成 raw MotionCommand。
 4. 输出前调用 RadarServiceManager.ensure_running()。
 5. 如果 Livox / FAST-LIO 未运行：
@@ -90,19 +90,19 @@ CommandEnvelope + ObstacleReport
 8. AO 输出 safe MotionCommand 到 G1。
 ```
 
-### 4.3 手环 OFF / 串口失效时序
+### 4.3 手环 OFF / 位置帧超时 / 串口失效时序
 
 ```text
-1. 读到 wristband OFF，或手环心跳超时，或串口/ALX 长期无效。
+1. 读到显式 wristband OFF 帧，或超过 stale_timeout_s 未解析到新鲜 ALX position frame，或串口长期无效。
 2. 立即覆盖 latest raw command 为 stop。
-3. G1 立即收到 stop(reason="wristband_off" 或对应错误原因)。
+3. G1 立即收到 stop(reason="wristband_off" / "data_timeout" / "serial_error")。
 4. 不再放行 move MotionCommand。
 5. RadarServiceManager 开始 idle 计时。
 6. 10 秒内没有新的有效运动需求时：
    - 停止 FAST-LIO。
    - 停止 Livox ROS2 driver。
    - 释放雷达。
-7. AO follow 主进程继续读取 USB 串口，等待下一次 wristband ON。
+7. AO follow 主进程继续读取 USB 串口，等待下一次新鲜 ALX position frame。
 ```
 
 ## 5. MotionCommand 兼容性
@@ -166,7 +166,10 @@ Livox / FAST-LIO 未 ready:
   AO/output 层输出 stop(reason="radar_not_ready")
 
 手环 OFF:
-  立即覆盖 latest command 为 stop(reason="wristband_off")
+  如果解析到显式 OFF 帧，立即覆盖 latest command 为 stop(reason="wristband_off")
+
+ALX 位置帧停止刷新:
+  超过 stale_timeout_s 后覆盖 latest command 为 stop(reason="data_timeout")
 
 G1 dispatch 过慢或 SDK timeout:
   G1 bridge watchdog 输出 stop / fault
@@ -220,7 +223,7 @@ loop_dt 超过 hard_loop_dt_ms:
 - `safe_command_kind`
 - `safe_command_reason`
 - `radar_state`
-- `wristband_state`
+- `wristband_gate_state`
 
 ## 7. RadarServiceManager
 
@@ -333,7 +336,7 @@ src/robot_follow/ao/
 
   serial/
     combined_source.py
-      同一个 USB 串口读取者，解析 wristband + ALX。
+      同一个 USB 串口读取者，解析 ALX position frame，并从位置帧新鲜度 / 显式 OFF 帧维护 wristband gate。
 
   radar/
     ...
@@ -427,9 +430,11 @@ run:
 
 wristband:
   enabled: true
-  on_token: "ON"
-  off_token: "OFF"
-  heartbeat_timeout_s: 3.0
+  # 第一版 gate 规则沿用当前 Robot Follow 实测解析：
+  # 新鲜 ALX position frame 表示 enabled；显式 OFF 帧优先表示 disabled；
+  # 如果没有显式 OFF 帧，则由 alx.stale_timeout_s 触发 data_timeout。
+  infer_on_from_position_frame: true
+  explicit_off_frame_enabled: true
 
 radar_service:
   idle_timeout_s: 10.0
@@ -495,25 +500,26 @@ safe command = stop(reason="sdk_error" 或 "sdk_timeout")
 第一版设计验收标准：
 
 1. 同一个 USB 串口只有 AO follow 主进程打开。
-2. 手环 ON 后，系统可以读取 ALX 位置信息并生成 raw MotionCommand。
-3. 手环 ON 后，如果 Livox / FAST-LIO 未运行，系统会按需启动它们。
+2. 解析到新鲜 ALX position frame 后，系统可以生成 raw MotionCommand。
+3. 有新鲜 ALX position frame 后，如果 Livox / FAST-LIO 未运行，系统会按需启动它们。
 4. `/cloud_registered_body` 未 ready 前，G1 必须保持 stop。
 5. 点云 ready 后，raw MotionCommand 进入 AO planner，输出 safe MotionCommand。
-6. 手环 OFF 后，G1 立即收到 stop。
-7. 手环 OFF 后，10 秒无有效运动需求时 FAST-LIO 和 Livox 停止。
-8. MotionCommand 不排队，过期 command 不补处理。
-9. 点云不排队，过期点云不补处理。
-10. 日志能定位 ALX、command、cloud、AO、G1 dispatch 的延迟来源。
-11. Livox / FAST-LIO 启动期间不缓存 move command，radar ready 后只处理最新未过期 command。
-12. safe command 输出前检查 command age、cloud age 和 AO 处理耗时，任一超预算都必须 stop 或 fault。
-13. 存在完整主配置 `configs/jetson_g1_ao_radar.yaml`，并从 `configs/jetson_g1_safe.yaml` 扩展现有 alx/g1/safety/follow/filter/run 参数。
-14. 修改 AO/Radar/G1/Follow 现场参数不需要修改 `src/`。
+6. 解析到显式 OFF 帧后，G1 立即收到 stop。
+7. 没有新鲜 ALX position frame 超过 `alx.stale_timeout_s` 后，G1 收到 stop(reason="data_timeout")。
+8. 显式 OFF 或 data_timeout 后，10 秒无有效运动需求时 FAST-LIO 和 Livox 停止。
+9. MotionCommand 不排队，过期 command 不补处理。
+10. 点云不排队，过期点云不补处理。
+11. 日志能定位 ALX、command、cloud、AO、G1 dispatch 的延迟来源。
+12. Livox / FAST-LIO 启动期间不缓存 move command，radar ready 后只处理最新未过期 command。
+13. safe command 输出前检查 command age、cloud age 和 AO 处理耗时，任一超预算都必须 stop 或 fault。
+14. 存在完整主配置 `configs/jetson_g1_ao_radar.yaml`，并从 `configs/jetson_g1_safe.yaml` 扩展现有 alx/g1/safety/follow/filter/run 参数。
+15. 修改 AO/Radar/G1/Follow 现场参数不需要修改 `src/`。
 
 ## 14. 待实现前必须确认的接口细节
 
 以下属于实现计划阶段需要细化的内容，不改变本设计方向：
 
-- 同一个 USB 串口中手环帧和 ALX 帧的实际解析规则。
+- 当前 Robot Follow 实测解析规则如何暴露为结构化 wristband gate 状态。
 - Livox ROS2 driver 启动命令。
 - FAST-LIO 启动命令和 config 路径。
 - `/cloud_registered_body` 的 frame_id 和坐标约定。
