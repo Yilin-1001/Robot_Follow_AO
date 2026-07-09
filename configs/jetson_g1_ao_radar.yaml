@@ -23,9 +23,9 @@ ao_radar:
     warn_loop_dt_ms: 75.0
     hard_loop_dt_ms: 150.0
   output:
-    mode: mock
+    mode: g1
     require_real_g1_confirmation: true
-    confirm_real_g1: false
+    confirm_real_g1: true
     network_interface: eth0
   logging:
     enabled: true
