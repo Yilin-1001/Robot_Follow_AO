@@ -39,7 +39,7 @@ class TransformConfig:
     input_frame: str = "livox_frame"
     target_frame: str = "body"
     apply_static_transform: bool = True
-    roll_deg: float = 0.0
+    roll_deg: float = 180.0
     pitch_deg: float = 0.0
     yaw_deg: float = 0.0
     x_m: float = 0.0
