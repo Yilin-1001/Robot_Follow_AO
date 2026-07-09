@@ -109,7 +109,14 @@ ao_radar:
     warn_loop_dt_ms: 75.0
     hard_loop_dt_ms: 150.0
   output:
-    mode: g1
+    mode: mock
     require_real_g1_confirmation: true
     confirm_real_g1: false
-    network_interface: enp2s0
+    network_interface: eth0
+  logging:
+    enabled: true
+    csv_path: logs/ao_radar_frames.csv
+    timestamped_runs: true
+    filename_time_format: "%Y%m%d_%H%M%S"
+    log_every_n_frames: 1
+    terminal_summary_interval_s: 0.5

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -24,6 +25,7 @@ class AORadarLogRow:
 
 class AORadarCSVLogger:
     def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
         self._file = path.open("w", newline="", encoding="utf-8")
         self._writer = csv.DictWriter(self._file, fieldnames=list(AORadarLogRow.__dataclass_fields__))
         self._writer.writeheader()
@@ -34,3 +36,8 @@ class AORadarCSVLogger:
 
     def close(self) -> None:
         self._file.close()
+
+
+def timestamped_log_path(path: Path, *, time_format: str, now: datetime | None = None) -> Path:
+    stamp = (datetime.now() if now is None else now).strftime(time_format)
+    return path.with_name(f"{path.stem}_{stamp}{path.suffix}")

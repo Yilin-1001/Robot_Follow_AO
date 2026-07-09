@@ -145,3 +145,10 @@ def test_frame_age_and_staleness() -> None:
     assert frame.age_s(now=10.25) == 0.25
     assert frame.is_stale(now=10.6, max_age_s=0.5) is True
     assert frame.is_stale(now=10.4, max_age_s=0.5) is False
+
+
+def test_frame_age_prefers_received_at_for_live_freshness() -> None:
+    frame = PointCloudFrame(timestamp=1.0, points=[], received_at_s=10.0)
+
+    assert frame.age_s(now=10.25) == 0.25
+    assert frame.is_stale(now=10.4, max_age_s=0.5) is False

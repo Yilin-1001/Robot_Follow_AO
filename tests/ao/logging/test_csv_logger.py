@@ -1,4 +1,7 @@
-from robot_follow.ao.logging.csv_logger import AORadarCSVLogger, AORadarLogRow
+from datetime import datetime
+from pathlib import Path
+
+from robot_follow.ao.logging.csv_logger import AORadarCSVLogger, AORadarLogRow, timestamped_log_path
 
 
 def test_csv_logger_writes_required_latency_fields(tmp_path) -> None:
@@ -28,3 +31,13 @@ def test_csv_logger_writes_required_latency_fields(tmp_path) -> None:
 
     assert "alx_age_ms,command_age_ms,cloud_age_ms" in text
     assert "front_blocked" in text
+
+
+def test_timestamped_log_path_preserves_directory_and_suffix() -> None:
+    path = timestamped_log_path(
+        Path("logs/ao_radar_frames.csv"),
+        time_format="%Y%m%d_%H%M%S",
+        now=datetime(2026, 7, 9, 12, 34, 56),
+    )
+
+    assert path == Path("logs/ao_radar_frames_20260709_123456.csv")

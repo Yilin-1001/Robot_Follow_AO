@@ -50,10 +50,20 @@ class AOLatencyConfig:
 
 @dataclass(frozen=True)
 class AOOutputConfig:
-    mode: str = "g1"
+    mode: str = "mock"
     require_real_g1_confirmation: bool = True
     confirm_real_g1: bool = False
-    network_interface: str = "enp2s0"
+    network_interface: str = "eth0"
+
+
+@dataclass(frozen=True)
+class AOLoggingConfig:
+    enabled: bool = True
+    csv_path: str = "logs/ao_radar_frames.csv"
+    timestamped_runs: bool = True
+    filename_time_format: str = "%Y%m%d_%H%M%S"
+    log_every_n_frames: int = 1
+    terminal_summary_interval_s: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -62,6 +72,7 @@ class AORadarConfig:
     radar: AORadarServiceConfig = field(default_factory=AORadarServiceConfig)
     latency: AOLatencyConfig = field(default_factory=AOLatencyConfig)
     output: AOOutputConfig = field(default_factory=AOOutputConfig)
+    logging: AOLoggingConfig = field(default_factory=AOLoggingConfig)
 
 
 T = TypeVar("T")
@@ -75,6 +86,7 @@ def load_ao_radar_config(path: Path) -> AORadarConfig:
         radar=_dataclass_from_section(section, "radar", AORadarServiceConfig),
         latency=_dataclass_from_section(section, "latency", AOLatencyConfig),
         output=_dataclass_from_section(section, "output", AOOutputConfig),
+        logging=_dataclass_from_section(section, "logging", AOLoggingConfig),
     )
 
 

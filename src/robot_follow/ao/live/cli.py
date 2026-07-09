@@ -14,14 +14,35 @@ from pathlib import Path
 
 from robot_follow.ao.avoidance.planner import AvoidancePlanner
 from robot_follow.ao.config import load_ao_radar_config
+from robot_follow.ao.logging.csv_logger import AORadarCSVLogger, timestamped_log_path
 from robot_follow.ao.live.fast_lio_source import FastLIOPointCloudSource
 from robot_follow.ao.live.radar_service_manager import RadarServiceManager
 from robot_follow.ao.live.runtime import AORadarRuntime
 from robot_follow.core import FollowPipeline, SafetyManager, TargetFilter
+from robot_follow.core.types import MotionCommand
 from robot_follow.core.follow_controller import FollowController, FollowConfig
 from robot_follow.core.safety import SafetyConfig
 from robot_follow.real.alx_source import ALXLiveSource
 from robot_follow.real.g1.bridge import G1MotionBridge
+
+
+class MockMotionBridge:
+    """Mock output for full AO live dry-runs without touching the G1 SDK."""
+
+    def __init__(self) -> None:
+        self.commands: list[MotionCommand] = []
+
+    def init(self) -> None:
+        print("[AO_OUTPUT] mode=mock initialized", flush=True)
+
+    def dispatch(self, command: MotionCommand) -> None:
+        self.commands.append(command)
+
+    def tick(self, *, now: float) -> None:
+        return None
+
+    def close(self) -> None:
+        print("[AO_OUTPUT] mode=mock closed", flush=True)
 
 
 def build_runtime_from_config(config_path: Path) -> AORadarRuntime:
@@ -30,6 +51,8 @@ def build_runtime_from_config(config_path: Path) -> AORadarRuntime:
     Raises ValueError if real G1 output is requested but not confirmed.
     """
     config = load_ao_radar_config(config_path)
+    if config.output.mode not in {"mock", "g1"}:
+        raise ValueError("ao_radar.output.mode must be 'mock' or 'g1'")
     if (
         config.output.mode == "g1"
         and config.output.require_real_g1_confirmation
@@ -74,7 +97,11 @@ def build_runtime_from_config(config_path: Path) -> AORadarRuntime:
 
     radar_pipeline = RadarPipelineAdapter(app_config)
     planner = AvoidancePlanner()
-    bridge = G1MotionBridge(network_interface=config.output.network_interface)
+    bridge = (
+        MockMotionBridge()
+        if config.output.mode == "mock"
+        else G1MotionBridge(network_interface=config.output.network_interface)
+    )
 
     return AORadarRuntime(
         config=config,
@@ -103,22 +130,92 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     runtime = build_runtime_from_config(args.config)
-    runtime.alx_source.start()
-    runtime.cloud_source.start()
-
-    period_s = 1.0 / runtime.config.latency.ao_output_loop_hz
+    logger = _build_logger(runtime.config)
+    last_summary_at: float | None = None
     try:
+        runtime.alx_source.start()
+        runtime.cloud_source.start()
+        _init_bridge(runtime.bridge)
+
+        period_s = 1.0 / runtime.config.latency.ao_output_loop_hz
         while True:
             started = time.monotonic()
             runtime.tick()
+            if logger is not None and runtime.last_frame is not None:
+                logger.write(runtime.last_frame.to_log_row())
+            last_summary_at = _maybe_print_summary(
+                runtime,
+                last_summary_at=last_summary_at,
+                now=started,
+            )
             elapsed = time.monotonic() - started
             sleep_time = max(0.0, period_s - elapsed)
             if sleep_time > 0:
                 time.sleep(sleep_time)
     finally:
-        runtime.cloud_source.stop()
-        runtime.alx_source.stop()
-        runtime.radar_manager.stop()
-        runtime.bridge.close()
+        try:
+            runtime.cloud_source.stop()
+        finally:
+            try:
+                runtime.alx_source.stop()
+            finally:
+                try:
+                    runtime.radar_manager.stop()
+                finally:
+                    try:
+                        runtime.bridge.close()
+                    finally:
+                        if logger is not None:
+                            logger.close()
 
     return 0
+
+
+def _build_logger(config):
+    if not config.logging.enabled:
+        return None
+    path = Path(config.logging.csv_path)
+    if config.logging.timestamped_runs:
+        path = timestamped_log_path(path, time_format=config.logging.filename_time_format)
+    print(f"[AO_LOG] csv={path}", flush=True)
+    return AORadarCSVLogger(path)
+
+
+def _init_bridge(bridge) -> None:
+    init = getattr(bridge, "init", None)
+    if callable(init):
+        init()
+
+
+def _maybe_print_summary(
+    runtime: AORadarRuntime,
+    *,
+    last_summary_at: float | None,
+    now: float,
+) -> float | None:
+    interval = runtime.config.logging.terminal_summary_interval_s
+    if interval <= 0.0:
+        return last_summary_at
+    if last_summary_at is not None and now - last_summary_at < interval:
+        return last_summary_at
+    frame = runtime.last_frame
+    if frame is None:
+        return last_summary_at
+    raw = frame.raw_command
+    raw_summary = "none" if raw is None else (
+        f"{raw.kind} vx={raw.vx:.3f} vy={raw.vy:.3f} "
+        f"omega={raw.omega:.3f} reason={raw.reason}"
+    )
+    safe = frame.command
+    print(
+        "[AO_FRAME] "
+        f"raw={raw_summary} "
+        f"safe={safe.kind} vx={safe.vx:.3f} vy={safe.vy:.3f} "
+        f"omega={safe.omega:.3f} reason={safe.reason} "
+        f"radar={frame.radar_state} wristband={frame.wristband_gate_state} "
+        f"alx_age_ms={frame.alx_age_ms:.0f} cloud_age_ms={frame.cloud_age_ms:.0f} "
+        f"cmd_age_ms={frame.command_age_ms:.0f} ao_ms={frame.ao_process_ms:.1f} "
+        f"dispatch_ms={frame.g1_dispatch_ms:.1f}",
+        flush=True,
+    )
+    return now

@@ -18,7 +18,11 @@ def test_loads_default_config_values_from_empty_mapping(tmp_path: Path) -> None:
     assert config.latency.max_command_age_s == 0.2
     assert config.latency.max_cloud_age_s == 0.5
     assert config.output.require_real_g1_confirmation is True
-    assert config.output.network_interface == "enp2s0"
+    assert config.output.mode == "mock"
+    assert config.output.network_interface == "eth0"
+    assert config.logging.enabled is True
+    assert config.logging.timestamped_runs is True
+    assert config.logging.terminal_summary_interval_s == 0.5
 
 
 def test_rejects_unknown_ao_section_key(tmp_path: Path) -> None:
@@ -56,7 +60,10 @@ def test_loads_runtime_overrides(tmp_path: Path) -> None:
         "  output:\n"
         "    mode: g1\n"
         "    confirm_real_g1: true\n"
-        "    network_interface: eth0\n",
+        "    network_interface: eth0\n"
+        "  logging:\n"
+        "    enabled: false\n"
+        "    csv_path: logs/custom.csv\n",
         encoding="utf-8",
     )
 
@@ -70,3 +77,17 @@ def test_loads_runtime_overrides(tmp_path: Path) -> None:
     assert config.output.mode == "g1"
     assert config.output.confirm_real_g1 is True
     assert config.output.network_interface == "eth0"
+    assert config.logging.enabled is False
+    assert config.logging.csv_path == "logs/custom.csv"
+
+
+def test_loads_dedicated_ao_radar_config() -> None:
+    config = load_ao_radar_config(Path("configs/jetson_g1_ao_radar.yaml"))
+
+    assert config.output.mode == "mock"
+    assert config.output.network_interface == "eth0"
+    assert config.radar.livox_start_command == "ros2 launch livox_ros_driver2 msg_MID360_launch.py"
+    assert "/home/fk/g1_mid360_ros2_ws/src/FAST_LIO_ROS2/config/mid360.yaml" in (
+        config.radar.fast_lio_start_command
+    )
+    assert config.logging.timestamped_runs is True

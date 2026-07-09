@@ -1,0 +1,36 @@
+# Dedicated Robot Follow AO Radar live config.
+# Default output is mock so this file can be used for full ALX + FAST-LIO
+# dry-runs without touching the G1 SDK. Set output.mode=g1 and
+# confirm_real_g1=true only for deliberate low-speed real-G1 tests.
+
+ao_radar:
+  alx:
+    port: /dev/ttyUSB0
+    baudrate: 115200
+    stale_timeout_s: 0.5
+  radar:
+    idle_stop_s: 5.0
+    livox_start_command: "ros2 launch livox_ros_driver2 msg_MID360_launch.py"
+    fast_lio_start_command: "ros2 launch fast_lio mapping.launch.py config_file:=/home/fk/g1_mid360_ros2_ws/src/FAST_LIO_ROS2/config/mid360.yaml rviz:=false"
+    stop_timeout_s: 3.0
+    ready_timeout_s: 10.0
+  latency:
+    ao_output_loop_hz: 20.0
+    max_command_age_s: 0.2
+    max_cloud_age_s: 0.5
+    max_ao_process_ms: 20.0
+    max_g1_dispatch_ms: 30.0
+    warn_loop_dt_ms: 75.0
+    hard_loop_dt_ms: 150.0
+  output:
+    mode: mock
+    require_real_g1_confirmation: true
+    confirm_real_g1: false
+    network_interface: eth0
+  logging:
+    enabled: true
+    csv_path: logs/ao_radar_frames.csv
+    timestamped_runs: true
+    filename_time_format: "%Y%m%d_%H%M%S"
+    log_every_n_frames: 1
+    terminal_summary_interval_s: 0.5

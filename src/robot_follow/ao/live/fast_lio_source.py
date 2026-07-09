@@ -14,9 +14,11 @@ class PointCloudFrame:
 
     timestamp: float
     points: list[tuple[float, float, float]]
+    received_at_s: float | None = None
 
     def age_s(self, now: float | None = None) -> float:
-        return (time.monotonic() if now is None else now) - self.timestamp
+        reference = self.timestamp if self.received_at_s is None else self.received_at_s
+        return (time.monotonic() if now is None else now) - reference
 
     def is_stale(self, *, now: float, max_age_s: float) -> bool:
         return self.age_s(now) > max_age_s

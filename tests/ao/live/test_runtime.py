@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+import pytest
+
 from robot_follow.ao.config import AOALXConfig, AOLatencyConfig, AOOutputConfig, AORadarConfig, AORadarServiceConfig
 from robot_follow.ao.live.command_envelope import CommandEnvelope
 from robot_follow.ao.live.fast_lio_source import PointCloudFrame
@@ -77,9 +79,13 @@ class FakeRadarPipeline:
 class FakeBridge:
     def __init__(self):
         self.commands = []
+        self.ticks = []
 
     def dispatch(self, command: MotionCommand) -> None:
         self.commands.append(command)
+
+    def tick(self, *, now: float) -> None:
+        self.ticks.append(now)
 
 
 def config() -> AORadarConfig:
@@ -111,6 +117,10 @@ def test_fresh_position_starts_radar_and_dispatches_safe_command() -> None:
     assert radar_manager.position_times == [99.95]
     assert radar_manager.ensure_count == 1
     assert bridge.commands[-1].kind == "move"
+    assert bridge.ticks == [100.0]
+    assert runtime.last_frame is not None
+    assert runtime.last_frame.raw_command is not None
+    assert runtime.last_frame.to_log_row().safe_command_kind == "move"
 
 
 def test_stale_position_stops_g1_and_does_not_start_radar() -> None:
@@ -133,6 +143,8 @@ def test_stale_position_stops_g1_and_does_not_start_radar() -> None:
     assert radar_manager.ensure_count == 0
     assert bridge.commands[-1].kind == "stop"
     assert bridge.commands[-1].reason == "data_timeout"
+    assert runtime.last_frame is not None
+    assert runtime.last_frame.stop_reason == "data_timeout"
 
 
 def test_missing_or_stale_cloud_stops_before_ao_planner() -> None:
@@ -157,7 +169,7 @@ def test_missing_or_stale_cloud_stops_before_ao_planner() -> None:
 
 class SlowClock:
     def __init__(self):
-        self.values = iter([100.0, 100.0, 100.05])
+        self.values = iter([100.0, 100.0, 100.05, 100.05, 100.05])
 
     def __call__(self) -> float:
         return next(self.values)
@@ -181,3 +193,24 @@ def test_slow_ao_result_is_discarded() -> None:
 
     assert bridge.commands[-1].kind == "stop"
     assert bridge.commands[-1].reason == "ao_timeout"
+
+
+def test_cloud_freshness_uses_received_at_when_available() -> None:
+    bridge = FakeBridge()
+    runtime = AORadarRuntime(
+        config=config(),
+        alx_source=FakeALXSource(FakeSnapshot(timestamp=99.95)),
+        pipeline=FakePipeline(),
+        radar_manager=FakeRadarManager(),
+        cloud_source=FakeCloudSource(PointCloudFrame(timestamp=1.0, points=[], received_at_s=99.9)),
+        radar_pipeline=FakeRadarPipeline(),
+        planner=FakePlanner(),
+        bridge=bridge,
+        clock=lambda: 100.0,
+    )
+
+    runtime.tick()
+
+    assert bridge.commands[-1].kind == "move"
+    assert runtime.last_frame is not None
+    assert runtime.last_frame.cloud_age_ms == pytest.approx(100.0)
