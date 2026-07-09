@@ -571,3 +571,9 @@ safe command = stop(reason="sdk_error" 或 "sdk_timeout")
 - `/cloud_registered_body` 的 frame_id 和坐标约定。
 - G1 网卡名、速度上限和 yaw sign。
 - 真实输出 CLI 确认参数命名。
+
+## Implementation Plan
+
+Implementation plan: `docs/superpowers/plans/2026-07-09-robot-follow-ao-radar.md`
+
+The implementation keeps Robot Follow core unchanged, exposes only structured wristband gate state from the existing parser, adds AO runtime under `robot_follow.ao`, and keeps the command/point-cloud paths latest-only.
