@@ -128,6 +128,17 @@ CommandEnvelope
   source: "robot_follow"
 ```
 
+AO planner 必须适配当前 Robot Follow 的 `MotionCommand + CommandEnvelope`。旧版
+`g1_mid360_ao` 的 planner 可以复制迁移，但需要做接口适配：
+
+- 不修改当前 `robot_follow.core.types.MotionCommand`。
+- 不要求 Robot Follow `MotionCommand` 增加 `timestamp` 或 `source` 字段。
+- AO planner 需要时间戳时，从 `CommandEnvelope.generated_at` 读取。
+- AO planner 需要 command source 时，从 `CommandEnvelope.source` 或决策上下文读取。
+- 避障核心规则保持旧版逻辑，不因为类型适配改变避障行为。
+
+不要长期保留两套可混用的 `MotionCommand` 类型。AO 输出给 G1 的最终命令也应是当前 Robot Follow 的 `MotionCommand`。
+
 Robot Follow 现有逻辑已经是 latest snapshot + per-frame dispatch：
 
 - `ALXLiveSource` 后台读取串口，只保存最新 ALX snapshot。
@@ -256,11 +267,11 @@ ensure_running()
 cloud_ready()
   检查 /cloud_registered_body 是否已有发布者或最新点云。
 
-mark_motion_demand(now)
-  记录最近一次有效运动需求时间。
+mark_position_frame_seen(now)
+  记录最近一次解析到新鲜 ALX position frame 的时间。
 
 tick_idle(now)
-  如果超过 idle_timeout_s，则停止 FAST-LIO 和 Livox。
+  如果距离最近一次新鲜 ALX position frame 超过 idle_timeout_s，则停止 FAST-LIO 和 Livox。
 
 stop()
   按顺序停止 FAST-LIO 和 Livox。
@@ -282,7 +293,7 @@ idle_timeout_s = 5.0
 
 ## 8. AO 避障策略
 
-第一版直接复制旧版 `g1_mid360_ao` 的 radar / avoidance 核心逻辑到当前项目，例如：
+第一版复制旧版 `g1_mid360_ao` 的 radar / avoidance 核心逻辑到当前项目，并做类型/接口适配。例如：
 
 ```text
 src/robot_follow/ao/
@@ -299,6 +310,19 @@ src/robot_follow/ao/
     planner.py
     decision.py
 ```
+
+`ao/core/types.py` 只应保留 AO 需要的雷达/避障类型，例如：
+
+```text
+PointCloudFrame
+ZoneResult
+ObstacleReport
+AvoidanceDecision
+DecisionKind
+Direction
+```
+
+不要从旧版长期复制并使用旧 AO 的 `MotionCommand` / `CommandKind` 作为主命令类型。旧 planner 中依赖这些类型的地方应适配到当前 Robot Follow `MotionCommand + CommandEnvelope`。适配只改变接口形状，不改变旧版 AO 的避障状态机和规则。
 
 保留旧版 stateful planner 行为：
 
@@ -393,7 +417,7 @@ run
 AO / Radar 只追加新 section，不替换现有 section 的含义：
 
 ```text
-wristband
+wristband_gate
 radar_service
 fast_lio
 transform
@@ -446,7 +470,7 @@ run:
   command_timeout_s: 0.2
   print_every_s: 0.5
 
-wristband:
+wristband_gate:
   enabled: true
   # 第一版 gate 规则沿用当前 Robot Follow 实测解析：
   # 新鲜 ALX position frame 表示 enabled；显式 OFF 帧优先表示 disabled；
