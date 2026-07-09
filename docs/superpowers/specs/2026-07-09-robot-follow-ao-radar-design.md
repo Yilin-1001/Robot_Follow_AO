@@ -21,7 +21,7 @@ USB 串口，新架构必须保证同一个串口只有一个读取者。
 - 使用 `robot_followao_radar` Python 环境运行。
 - 直接接入 Livox 和 FAST-LIO，使用 `/cloud_registered_body` 点云做 AO 避障。
 - 解析到新鲜 ALX 位置帧后视为手环已打开，并直接跑 `ALX 跟随命令 + 雷达 AO 避障 + G1 输出`。
-- 解析到显式 OFF 帧或位置帧超时后停止 G1 运动，并在 10 秒无有效运动需求后停止 FAST-LIO 和 Livox，释放雷达。
+- 解析到显式 OFF 帧或位置帧超时后停止 G1 运动，并在 5 秒无新鲜 position frame 后停止 FAST-LIO 和 Livox，释放雷达。
 - 保持当前 Robot Follow 的 `MotionCommand` 语义，不把历史 MotionCommand 排队处理。
 - 直接复制旧版 AO 的 radar / avoidance 核心模块到当前项目，避免运行时依赖失败版本目录。
 - 为每帧记录足够的 age / timing 字段，便于定位延迟。
@@ -80,7 +80,7 @@ CommandEnvelope + ObstacleReport
 1. AO follow 主进程持续读取同一个 USB 串口。
 2. 解析到新鲜 ALX position frame，视为 wristband enabled。
 3. ALX 数据有效时，Robot Follow pipeline 生成 raw MotionCommand。
-4. 输出前调用 RadarServiceManager.ensure_running()。
+4. 新鲜 ALX position frame 同时作为雷达服务 ON 判定，输出前调用 RadarServiceManager.ensure_running()。
 5. 如果 Livox / FAST-LIO 未运行：
    - 启动 Livox ROS2 driver。
    - 启动 FAST-LIO。
@@ -97,8 +97,8 @@ CommandEnvelope + ObstacleReport
 2. 立即覆盖 latest raw command 为 stop。
 3. G1 立即收到 stop(reason="wristband_off" / "data_timeout" / "serial_error")。
 4. 不再放行 move MotionCommand。
-5. RadarServiceManager 开始 idle 计时。
-6. 10 秒内没有新的有效运动需求时：
+5. RadarServiceManager 开始 idle 计时；idle 依据是“没有新鲜 ALX position frame”，不是 MotionCommand 队列。
+6. 连续 5 秒没有新鲜 ALX position frame 时：
    - 停止 FAST-LIO。
    - 停止 Livox ROS2 driver。
    - 释放雷达。
@@ -229,6 +229,24 @@ loop_dt 超过 hard_loop_dt_ms:
 
 `RadarServiceManager` 只负责 Livox 和 FAST-LIO 生命周期，不读取手环，不解析 ALX，不做 AO 决策。
 
+雷达服务 ON/OFF 判定标准：
+
+```text
+ON:
+  成功解析到新鲜 ALX position frame。
+
+保持 ON:
+  持续在 alx.stale_timeout_s 内解析到新鲜 ALX position frame。
+
+立即停止 G1:
+  解析到显式 OFF 帧，或超过 alx.stale_timeout_s 没有新鲜 ALX position frame。
+
+雷达服务 OFF:
+  连续 5 秒没有新鲜 ALX position frame 后，停止 FAST-LIO 和 Livox。
+```
+
+该判定沿用当前 Robot Follow 实测正确的串口解析方式，不新增第二套 wristband 解析规则。
+
 职责：
 
 ```text
@@ -251,7 +269,7 @@ stop()
 确认参数：
 
 ```text
-idle_timeout_s = 10.0
+idle_timeout_s = 5.0
 ```
 
 停止顺序：
@@ -437,7 +455,7 @@ wristband:
   explicit_off_frame_enabled: true
 
 radar_service:
-  idle_timeout_s: 10.0
+  idle_timeout_s: 5.0
   cloud_ready_timeout_s: 10.0
   livox_command: []
   fast_lio_command: []
@@ -506,7 +524,7 @@ safe command = stop(reason="sdk_error" 或 "sdk_timeout")
 5. 点云 ready 后，raw MotionCommand 进入 AO planner，输出 safe MotionCommand。
 6. 解析到显式 OFF 帧后，G1 立即收到 stop。
 7. 没有新鲜 ALX position frame 超过 `alx.stale_timeout_s` 后，G1 收到 stop(reason="data_timeout")。
-8. 显式 OFF 或 data_timeout 后，10 秒无有效运动需求时 FAST-LIO 和 Livox 停止。
+8. 显式 OFF 或 data_timeout 后，5 秒无新鲜 ALX position frame 时 FAST-LIO 和 Livox 停止。
 9. MotionCommand 不排队，过期 command 不补处理。
 10. 点云不排队，过期点云不补处理。
 11. 日志能定位 ALX、command、cloud、AO、G1 dispatch 的延迟来源。
