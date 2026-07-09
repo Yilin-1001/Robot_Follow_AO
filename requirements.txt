@@ -1,6 +1,7 @@
 # Core runtime dependencies
 pyserial>=3.5
 numpy>=1.23
+aiohttp>=3.8
 
 # Unitree G1 SDK dependency
 cyclonedds==0.10.2

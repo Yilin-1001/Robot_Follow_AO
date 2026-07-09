@@ -89,6 +89,23 @@ conda run -n robot-follow python -m robot_follow.main \
 robot-follow --config configs/jetson_g1_safe.yaml --dry-run
 ```
 
+## AO Radar Web 点云可视化
+
+项目已复用 Robot FollowAO Radar 的成熟 Web viewer，前端源码和已构建的 `dist` 位于 `src/robot_follow/ao/web/frontend/`。Jetson 上有 ROS2/FAST-LIO 点云时可直接启动：
+
+```bash
+conda run -n robot-follow robot-follow-ao-web \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --topic /cloud_registered_body
+```
+
+然后在同一局域网电脑浏览器打开 `http://<Jetson IP>:8080` 查看点云、zone 和避障决策。无 ROS 环境下可先看模拟页面：
+
+```bash
+conda run -n robot-follow robot-follow-ao-web-sim --host 0.0.0.0 --port 8080
+```
+
 如果已经在仓库根目录，也可以直接使用 Python 模块入口；这种方式适合开发调试：
 
 ```bash

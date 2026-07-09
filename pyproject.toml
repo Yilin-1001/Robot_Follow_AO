@@ -10,6 +10,7 @@ requires-python = ">=3.8"
 dependencies = [
   "pyserial>=3.5",
   "numpy>=1.23",
+  "aiohttp>=3.8",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +22,8 @@ dev = [
 robot-follow = "robot_follow.main:main"
 robot-follow-log = "robot_follow.run_logger:main"
 robot-follow-ao-radar = "robot_follow.ao.live.cli:main"
+robot-follow-ao-web = "robot_follow.ao.web.fast_lio_viewer:main"
+robot-follow-ao-web-sim = "robot_follow.ao.web.sim_viewer:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
