@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Callable, Deque, Optional
 
 from robot_follow.alx_g100_protocol import HeartbeatSample, PositionSample
-from robot_follow.serial_reader import ALXG100SerialReader
+from robot_follow.serial_reader import ALXG100SerialReader, WristbandGateState
 
 
 @dataclass(frozen=True)
@@ -64,6 +64,11 @@ class ALXLiveSource:
         self._latest_heartbeat_at: Optional[float] = None
         self._error: Optional[str] = None
         self._position_times: Deque[float] = deque()
+        self._wristband_state = WristbandGateState(enabled=None, updated_at=None)
+
+    def wristband_state(self) -> WristbandGateState:
+        with self._lock:
+            return self._wristband_state
 
     def start(self) -> None:
         """Start the background reader thread."""
@@ -143,6 +148,8 @@ class ALXLiveSource:
                 for parsed in reader.read_samples():
                     if self._stop.is_set():
                         break
+                    with self._lock:
+                        self._wristband_state = reader.wristband_state()
                     if isinstance(parsed, PositionSample):
                         self._update_position(parsed)
                     elif isinstance(parsed, HeartbeatSample):
@@ -153,6 +160,12 @@ class ALXLiveSource:
                     with self._lock:
                         self._error = f"{type(exc).__name__}: {exc}"
             finally:
+                try:
+                    state = reader.wristband_state()
+                except Exception:
+                    state = WristbandGateState(enabled=False, updated_at=time.monotonic())
+                with self._lock:
+                    self._wristband_state = state
                 try:
                     reader.close()
                 except Exception:

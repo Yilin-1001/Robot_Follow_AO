@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Iterator, Optional
 
 import serial
@@ -15,6 +16,12 @@ from robot_follow.alx_g100_protocol import (
 )
 
 
+@dataclass(frozen=True)
+class WristbandGateState:
+    enabled: Optional[bool]
+    updated_at: Optional[float]
+
+
 class ALXG100SerialReader:
     WRISTBAND_ON_PRINT_INTERVAL_S = 0.25
 
@@ -25,7 +32,14 @@ class ALXG100SerialReader:
         self._serial: Optional[serial.Serial] = None
         self._buffer = bytearray()
         self._wristband_enabled: Optional[bool] = None
+        self._wristband_updated_at: Optional[float] = None
         self._last_wristband_on_print_s = 0.0
+
+    def wristband_state(self) -> WristbandGateState:
+        return WristbandGateState(
+            enabled=self._wristband_enabled,
+            updated_at=self._wristband_updated_at,
+        )
 
     def open(self) -> None:
         self._serial = serial.Serial(
@@ -140,7 +154,10 @@ class ALXG100SerialReader:
             print("[WRISTBAND] ON", flush=True)
             self._last_wristband_on_print_s = now
         self._wristband_enabled = True
+        self._wristband_updated_at = now
 
     def _emit_wristband_off(self) -> None:
+        now = time.monotonic()
         print("[WRISTBAND] OFF", flush=True)
         self._wristband_enabled = False
+        self._wristband_updated_at = now

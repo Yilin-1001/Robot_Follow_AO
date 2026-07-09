@@ -4,6 +4,7 @@ import time
 
 from robot_follow.alx_g100_protocol import COMMAND_POSITION, PositionSample
 from robot_follow.real.alx_source import ALXLiveSource
+from robot_follow.serial_reader import WristbandGateState
 
 
 class RecoveringReader:
@@ -19,6 +20,9 @@ class RecoveringReader:
 
     def close(self):
         self.closed = True
+
+    def wristband_state(self):
+        return WristbandGateState(enabled=None, updated_at=None)
 
     def read_samples(self):
         if self.attempt == 0:
@@ -81,3 +85,40 @@ def test_live_source_reconnects_after_reader_error():
         assert RecoveringReader.attempts >= 2
     finally:
         source.stop()
+
+
+class GateStateReader:
+    def __init__(self, *args, **kwargs) -> None:
+        self.closed = False
+        self._state = WristbandGateState(enabled=None, updated_at=None)
+
+    def open(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+    def read_samples(self):
+        self._state = WristbandGateState(enabled=True, updated_at=123.0)
+        return iter(())
+
+    def wristband_state(self) -> WristbandGateState:
+        return self._state
+
+
+def test_live_source_exposes_cached_wristband_state() -> None:
+    source = ALXLiveSource(reader_factory=GateStateReader, reconnect_delay_s=0.01)
+
+    source.start()
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            state = source.wristband_state()
+            if state.enabled is True:
+                break
+            time.sleep(0.01)
+    finally:
+        source.stop()
+
+    assert source.wristband_state().enabled is True
+    assert source.wristband_state().updated_at == 123.0

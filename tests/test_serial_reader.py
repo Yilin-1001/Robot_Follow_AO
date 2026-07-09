@@ -89,3 +89,37 @@ def test_serial_read_timeout_does_not_emit_wristband_off(capsys):
 
     assert isinstance(sample, PositionSample)
     assert "[WRISTBAND] OFF" not in capsys.readouterr().out
+
+
+def test_wristband_state_starts_unknown() -> None:
+    reader = ALXG100SerialReader("/dev/null")
+
+    state = reader.wristband_state()
+
+    assert state.enabled is None
+    assert state.updated_at is None
+
+
+def test_position_frame_updates_wristband_state_to_on() -> None:
+    reader = ALXG100SerialReader("/dev/ttyUSB0")
+    reader._buffer.extend(POSITION_FRAME)
+
+    sample = reader._try_pop_sample()
+    state = reader.wristband_state()
+
+    assert sample is not None
+    assert state.enabled is True
+    assert state.updated_at is not None
+
+
+def test_off_frame_updates_wristband_state_to_off() -> None:
+    reader = ALXG100SerialReader("/dev/ttyUSB0")
+    reader._buffer.extend(
+        bytes.fromhex("FF FF FF FF 00 10 0A 6B 20 02 01 02 00 00 10 AA")
+    )
+
+    assert reader._try_pop_sample() is None
+    state = reader.wristband_state()
+
+    assert state.enabled is False
+    assert state.updated_at is not None
