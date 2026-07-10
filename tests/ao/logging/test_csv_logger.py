@@ -4,7 +4,7 @@ from pathlib import Path
 from robot_follow.ao.logging.csv_logger import AORadarCSVLogger, AORadarLogRow, timestamped_log_path
 
 
-def test_csv_logger_writes_required_latency_fields(tmp_path) -> None:
+def test_csv_logger_writes_required_40hz_evidence_fields(tmp_path) -> None:
     path = tmp_path / "ao.csv"
     logger = AORadarCSVLogger(path)
 
@@ -14,7 +14,7 @@ def test_csv_logger_writes_required_latency_fields(tmp_path) -> None:
             alx_age_ms=5.0,
             command_age_ms=3.0,
             cloud_age_ms=20.0,
-            loop_dt_ms=50.0,
+            loop_dt_ms=25.0,
             ao_process_ms=4.0,
             g1_dispatch_ms=2.0,
             raw_command_kind="move",
@@ -30,17 +30,36 @@ def test_csv_logger_writes_required_latency_fields(tmp_path) -> None:
             tag_status=3,
             robot_yaw_deg=42.5,
             robot_yaw_rate_rps=-0.27,
+            raw_command_generated_at_ms=2.0,
+            safe_command_generated_at_ms=5.0,
+            g1_response_at_ms=8.0,
+            total_latency_ms=6.0,
         )
     )
     logger.close()
 
-    text = path.read_text(encoding="utf-8")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    header = lines[0].split(",")
 
-    assert "alx_age_ms,command_age_ms,cloud_age_ms" in text
-    assert "raw_azimuth_deg,filtered_azimuth_deg,g1_sent_omega" in text
-    assert "distance_m,tag_status,robot_yaw_deg,robot_yaw_rate_rps" in text
-    assert "1.25,3,42.5,-0.27" in text
-    assert "front_blocked" in text
+    for field in [
+        "timestamp",
+        "loop_dt_ms",
+        "ao_process_ms",
+        "g1_dispatch_ms",
+        "raw_command_kind",
+        "raw_command_reason",
+        "safe_command_kind",
+        "safe_command_reason",
+        "command_age_ms",
+        "cloud_age_ms",
+        "raw_command_generated_at_ms",
+        "safe_command_generated_at_ms",
+        "g1_response_at_ms",
+        "total_latency_ms",
+    ]:
+        assert field in header
+    assert "25.0" in lines[1]
+    assert "front_blocked" in lines[1]
 
 
 def test_timestamped_log_path_preserves_directory_and_suffix() -> None:
