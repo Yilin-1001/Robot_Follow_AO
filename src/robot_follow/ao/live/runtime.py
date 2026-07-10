@@ -27,6 +27,9 @@ class AORadarFrameResult:
     radar_state: str
     wristband_gate_state: str
     stop_reason: str
+    raw_azimuth_deg: float | None = None
+    filtered_azimuth_deg: float | None = None
+    g1_sent_omega: float | None = None
 
     def to_log_row(self) -> AORadarLogRow:
         raw = self.raw_command
@@ -44,6 +47,9 @@ class AORadarFrameResult:
             safe_command_reason=self.command.reason,
             radar_state=self.radar_state,
             wristband_gate_state=self.wristband_gate_state,
+            raw_azimuth_deg=self.raw_azimuth_deg,
+            filtered_azimuth_deg=self.filtered_azimuth_deg,
+            g1_sent_omega=self.g1_sent_omega,
         )
 
 
@@ -105,6 +111,7 @@ class AORadarRuntime:
                 loop_dt_ms=loop_dt_ms,
             )
         alx_age_ms = snapshot.age_s(now) * 1000.0
+        raw_azimuth_deg = float(snapshot.azimuth_deg)
         if snapshot.age_s(now) > self.config.alx.stale_timeout_s:
             self.radar_manager.stop_if_idle(now=now)
             return self._dispatch_stop(
@@ -112,6 +119,7 @@ class AORadarRuntime:
                 now=now,
                 loop_dt_ms=loop_dt_ms,
                 alx_age_ms=alx_age_ms,
+                raw_azimuth_deg=raw_azimuth_deg,
             )
 
         self.radar_manager.on_position_frame(snapshot.timestamp)
@@ -124,6 +132,9 @@ class AORadarRuntime:
             valid=True,
         )
         step = self.pipeline.process(sample)
+        filtered_azimuth_deg = (
+            None if step.filtered is None else float(step.filtered.azimuth_deg)
+        )
         envelope = CommandEnvelope(
             command=step.command,
             generated_at=now,
@@ -139,6 +150,8 @@ class AORadarRuntime:
                 raw_command=step.command,
                 alx_age_ms=alx_age_ms,
                 command_age_s=envelope.age_s(now),
+                raw_azimuth_deg=raw_azimuth_deg,
+                filtered_azimuth_deg=filtered_azimuth_deg,
             )
         cloud_age_ms = self._cloud_age_ms(cloud, now=now)
         if cloud_age_ms / 1000.0 > self.config.latency.max_cloud_age_s:
@@ -150,6 +163,8 @@ class AORadarRuntime:
                 alx_age_ms=alx_age_ms,
                 command_age_s=envelope.age_s(now),
                 cloud_age_ms=cloud_age_ms,
+                raw_azimuth_deg=raw_azimuth_deg,
+                filtered_azimuth_deg=filtered_azimuth_deg,
             )
         if envelope.is_stale(now=now, max_age_s=self.config.latency.max_command_age_s):
             return self._dispatch_stop(
@@ -160,6 +175,8 @@ class AORadarRuntime:
                 alx_age_ms=alx_age_ms,
                 command_age_s=envelope.age_s(now),
                 cloud_age_ms=cloud_age_ms,
+                raw_azimuth_deg=raw_azimuth_deg,
+                filtered_azimuth_deg=filtered_azimuth_deg,
             )
 
         ao_start = self.clock()
@@ -176,6 +193,8 @@ class AORadarRuntime:
                 command_age_s=envelope.age_s(now),
                 cloud_age_ms=cloud_age_ms,
                 ao_process_ms=ao_ms,
+                raw_azimuth_deg=raw_azimuth_deg,
+                filtered_azimuth_deg=filtered_azimuth_deg,
             )
 
         dispatch_start = self.clock()
@@ -194,6 +213,9 @@ class AORadarRuntime:
             radar_state=self._radar_state(),
             wristband_gate_state=self._wristband_gate_state(),
             stop_reason="" if safe.kind != "stop" else safe.reason,
+            raw_azimuth_deg=raw_azimuth_deg,
+            filtered_azimuth_deg=filtered_azimuth_deg,
+            g1_sent_omega=self._g1_sent_omega(),
         )
         self._tick_bridge(now)
         return safe
@@ -209,6 +231,8 @@ class AORadarRuntime:
         command_age_s: float = 0.0,
         cloud_age_ms: float = 0.0,
         ao_process_ms: float = 0.0,
+        raw_azimuth_deg: float | None = None,
+        filtered_azimuth_deg: float | None = None,
     ) -> MotionCommand:
         command = MotionCommand(kind="stop", vx=0.0, vy=0.0, omega=0.0, reason=reason)
         dispatch_start = self.clock()
@@ -227,6 +251,9 @@ class AORadarRuntime:
             radar_state=self._radar_state(),
             wristband_gate_state=self._wristband_gate_state(),
             stop_reason=reason,
+            raw_azimuth_deg=raw_azimuth_deg,
+            filtered_azimuth_deg=filtered_azimuth_deg,
+            g1_sent_omega=self._g1_sent_omega(),
         )
         self._tick_bridge(now)
         return command
@@ -264,3 +291,15 @@ class AORadarRuntime:
         tick = getattr(self.bridge, "tick", None)
         if callable(tick):
             tick(now=now)
+
+    def _g1_sent_omega(self) -> float | None:
+        """Return the omega most recently attempted at the output bridge.
+
+        ``G1MotionBridge`` exposes this after applying yaw-sign and final
+        limits. Other bridge implementations can omit it, in which case the
+        log intentionally records an empty value rather than guessing.
+        """
+        value = getattr(self.bridge, "last_sent_omega", None)
+        if value is None:
+            return None
+        return float(value)

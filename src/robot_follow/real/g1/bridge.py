@@ -101,6 +101,7 @@ class G1MotionBridge:
         self._consecutive_sdk_timeouts = 0
         self._last_stop_attempt_time: float | None = None
         self._last_dispatch_time: float | None = None
+        self._last_sent_omega: float | None = None
 
     @property
     def state(self) -> BridgeState:
@@ -121,6 +122,15 @@ class G1MotionBridge:
     def config(self) -> G1BridgeConfig:
         """Bridge configuration."""
         return self._config
+
+    @property
+    def last_sent_omega(self) -> float | None:
+        """Most recent omega attempted at ``SetVelocity`` after final limits.
+
+        This is intended for runtime diagnostics. ``None`` means the most
+        recent dispatch did not reach a ``SetVelocity`` call.
+        """
+        return self._last_sent_omega
 
     def init(self) -> None:
         """Initialize DDS and LocoClient.
@@ -170,6 +180,7 @@ class G1MotionBridge:
 
         Routes to move() or stop() based on command.kind.
         """
+        self._last_sent_omega = None
         if command.kind == "stop":
             self.stop(command)
             return
@@ -186,6 +197,7 @@ class G1MotionBridge:
         5. Call SetVelocity(vx, 0, omega, duration=1.0) — byte-equivalent to
            Move(vx, 0, omega) but returns the real code so failures are detected.
         """
+        self._last_sent_omega = None
         if self._state in (BridgeState.CREATED, BridgeState.ERROR):
             # Refuse move; never crash the loop. Flag sdk_error so the next
             # frame's pipeline outputs a stop.
@@ -207,6 +219,7 @@ class G1MotionBridge:
         )
 
         try:
+            self._last_sent_omega = omega
             code = self._client.SetVelocity(vx, vy, omega, duration=_MOVE_DURATION_S)
             if _is_timeout_code(code, self._config):
                 self._record_timeout(f"G1 SetVelocity timed out with code {code}")
@@ -232,6 +245,7 @@ class G1MotionBridge:
         recorded as ``sdk_error`` + ERROR state so the control loop keeps
         running.
         """
+        self._last_sent_omega = None
         if self._client is None:
             logger.warning("G1 stop called before init, ignoring")
             return
@@ -240,6 +254,7 @@ class G1MotionBridge:
             return
         self._last_stop_attempt_time = now
         try:
+            self._last_sent_omega = 0.0
             code = self._client.SetVelocity(0.0, 0.0, 0.0, duration=_MOVE_DURATION_S)
             if _is_timeout_code(code, self._config):
                 self._record_timeout(f"G1 stop timed out with code {code}")
@@ -371,6 +386,7 @@ class G1MotionBridge:
         if self._client is None:
             return
         try:
+            self._last_sent_omega = 0.0
             code = self._client.SetVelocity(0.0, 0.0, 0.0, duration=_MOVE_DURATION_S)
             if _is_error_code(code):
                 logger.error(f"best-effort stop returned error code {code}")

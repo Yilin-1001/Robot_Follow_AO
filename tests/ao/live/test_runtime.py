@@ -9,6 +9,7 @@ from robot_follow.ao.config import AOALXConfig, AOLatencyConfig, AOOutputConfig,
 from robot_follow.ao.live.command_envelope import CommandEnvelope
 from robot_follow.ao.live.fast_lio_source import PointCloudFrame
 from robot_follow.ao.live.runtime import AORadarRuntime
+from robot_follow.core.filtering import FilteredTarget
 from robot_follow.core.pipeline import PipelineStepResult
 from robot_follow.core.types import MotionCommand, TargetSample
 
@@ -71,13 +72,22 @@ class FakeCloudSource:
 
 
 class FakePipeline:
-    def __init__(self):
+    def __init__(self, *, command=None, filtered=None):
         self.calls = []
+        self._command = command
+        self._filtered = filtered
 
     def process(self, sample: TargetSample):
         self.calls.append(sample)
-        command = MotionCommand(kind="move", vx=0.2, vy=0.0, omega=0.0, reason="follow")
-        return PipelineStepResult(sample=sample, filtered=None, verdict=None, command=command)
+        command = self._command or MotionCommand(
+            kind="move", vx=0.2, vy=0.0, omega=0.0, reason="follow"
+        )
+        return PipelineStepResult(
+            sample=sample,
+            filtered=self._filtered,
+            verdict=None,
+            command=command,
+        )
 
 
 class FakePlanner:
@@ -94,9 +104,11 @@ class FakeBridge:
     def __init__(self):
         self.commands = []
         self.ticks = []
+        self.last_sent_omega = None
 
     def dispatch(self, command: MotionCommand) -> None:
         self.commands.append(command)
+        self.last_sent_omega = command.omega
 
     def tick(self, *, now: float) -> None:
         self.ticks.append(now)
@@ -138,6 +150,45 @@ def test_fresh_position_starts_radar_and_dispatches_safe_command() -> None:
     assert runtime.last_frame is not None
     assert runtime.last_frame.raw_command is not None
     assert runtime.last_frame.to_log_row().safe_command_kind == "move"
+
+
+def test_frame_logs_raw_filtered_and_output_azimuth_diagnostics() -> None:
+    bridge = FakeBridge()
+    filtered = FilteredTarget(
+        distance_m=1.2,
+        azimuth_deg=18.5,
+        distance_jump=0.0,
+        angle_jump=0.0,
+        initialized=True,
+    )
+    runtime = AORadarRuntime(
+        config=config(),
+        alx_source=FakeALXSource(
+            FakeSnapshot(timestamp=99.95, azimuth_deg=30.0),
+            wristband_state=FakeWristbandState(enabled=True, updated_at=99.9),
+        ),
+        pipeline=FakePipeline(
+            command=MotionCommand(kind="move", vx=0.2, vy=0.0, omega=0.25, reason="follow"),
+            filtered=filtered,
+        ),
+        radar_manager=FakeRadarManager(),
+        cloud_source=FakeCloudSource(PointCloudFrame(timestamp=99.9, points=[])),
+        radar_pipeline=FakeRadarPipeline(),
+        planner=FakePlanner(),
+        bridge=bridge,
+        clock=lambda: 100.0,
+    )
+
+    runtime.tick()
+
+    assert runtime.last_frame is not None
+    assert runtime.last_frame.raw_azimuth_deg == pytest.approx(30.0)
+    assert runtime.last_frame.filtered_azimuth_deg == pytest.approx(18.5)
+    assert runtime.last_frame.g1_sent_omega == pytest.approx(0.25)
+    row = runtime.last_frame.to_log_row()
+    assert row.raw_azimuth_deg == pytest.approx(30.0)
+    assert row.filtered_azimuth_deg == pytest.approx(18.5)
+    assert row.g1_sent_omega == pytest.approx(0.25)
 
 
 def test_stale_position_stops_g1_and_does_not_start_radar() -> None:

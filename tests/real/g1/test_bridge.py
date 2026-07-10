@@ -200,6 +200,21 @@ def test_yaw_sign_flips_omega():
     assert fake.set_velocity_calls == [(0.1, 0.0, -0.2, 1.0)]
 
 
+def test_last_sent_omega_records_yaw_signed_and_limited_output():
+    fake = FakeLocoClient()
+    cfg = G1BridgeConfig(yaw_sign=-1, max_abs_omega=0.30)
+    bridge = G1MotionBridge("eth0", config=cfg, fake_client=fake)
+    bridge.init()
+
+    bridge.dispatch(_move(vx=0.1, omega=1.0, reason="turn"))
+
+    assert bridge.last_sent_omega == pytest.approx(-0.30)
+    bridge.dispatch(
+        MotionCommand(kind="stop", vx=0.0, vy=0.0, omega=0.0, reason="test_stop")
+    )
+    assert bridge.last_sent_omega == pytest.approx(0.0)
+
+
 def test_move_before_init_records_error_without_raising():
     fake = FakeLocoClient()
     bridge = G1MotionBridge("eth0", fake_client=fake)

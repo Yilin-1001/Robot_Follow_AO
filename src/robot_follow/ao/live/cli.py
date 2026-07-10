@@ -32,12 +32,14 @@ class MockMotionBridge:
 
     def __init__(self) -> None:
         self.commands: list[MotionCommand] = []
+        self.last_sent_omega: float | None = None
 
     def init(self) -> None:
         print("[AO_OUTPUT] mode=mock initialized", flush=True)
 
     def dispatch(self, command: MotionCommand) -> None:
         self.commands.append(command)
+        self.last_sent_omega = command.omega
 
     def tick(self, *, now: float) -> None:
         return None
@@ -248,6 +250,11 @@ def _maybe_print_summary(
         f"omega={raw.omega:.3f} reason={raw.reason}"
     )
     safe = frame.command
+    raw_azimuth = "-" if frame.raw_azimuth_deg is None else f"{frame.raw_azimuth_deg:.1f}"
+    filtered_azimuth = (
+        "-" if frame.filtered_azimuth_deg is None else f"{frame.filtered_azimuth_deg:.1f}"
+    )
+    g1_omega = "-" if frame.g1_sent_omega is None else f"{frame.g1_sent_omega:.3f}"
     print(
         "[AO_FRAME] "
         f"raw={raw_summary} "
@@ -256,7 +263,9 @@ def _maybe_print_summary(
         f"radar={frame.radar_state} wristband={frame.wristband_gate_state} "
         f"alx_age_ms={frame.alx_age_ms:.0f} cloud_age_ms={frame.cloud_age_ms:.0f} "
         f"cmd_age_ms={frame.command_age_ms:.0f} ao_ms={frame.ao_process_ms:.1f} "
-        f"dispatch_ms={frame.g1_dispatch_ms:.1f}",
+        f"dispatch_ms={frame.g1_dispatch_ms:.1f} "
+        f"raw_azimuth_deg={raw_azimuth} filtered_azimuth_deg={filtered_azimuth} "
+        f"g1_sent_omega={g1_omega}",
         flush=True,
     )
     return now

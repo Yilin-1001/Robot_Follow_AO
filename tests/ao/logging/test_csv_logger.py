@@ -23,6 +23,9 @@ def test_csv_logger_writes_required_latency_fields(tmp_path) -> None:
             safe_command_reason="front_blocked",
             radar_state="running",
             wristband_gate_state="on",
+            raw_azimuth_deg=31.0,
+            filtered_azimuth_deg=28.5,
+            g1_sent_omega=-0.3,
         )
     )
     logger.close()
@@ -30,6 +33,7 @@ def test_csv_logger_writes_required_latency_fields(tmp_path) -> None:
     text = path.read_text(encoding="utf-8")
 
     assert "alx_age_ms,command_age_ms,cloud_age_ms" in text
+    assert "raw_azimuth_deg,filtered_azimuth_deg,g1_sent_omega" in text
     assert "front_blocked" in text
 
 

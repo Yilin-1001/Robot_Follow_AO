@@ -21,6 +21,9 @@ class AORadarLogRow:
     safe_command_reason: str
     radar_state: str
     wristband_gate_state: str
+    raw_azimuth_deg: float | None = None
+    filtered_azimuth_deg: float | None = None
+    g1_sent_omega: float | None = None
 
 
 class AORadarCSVLogger:
