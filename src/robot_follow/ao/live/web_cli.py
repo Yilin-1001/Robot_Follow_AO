@@ -20,6 +20,7 @@ from robot_follow.ao.app.config import AppConfig
 from robot_follow.ao.avoidance.planner import StatefulAvoidancePlanner
 from robot_follow.ao.config import load_ao_radar_config
 from robot_follow.ao.live.cli import build_runtime_from_config
+from robot_follow.ao.live.loop_timing import LoopTiming, LoopTimingConfig
 from robot_follow.ao.web.frames import ConstantCommandSource, build_visualization_payload
 from robot_follow.ao.web.server import VisualizerHub, create_app
 
@@ -89,6 +90,21 @@ def _run_web_server_in_thread(hub: VisualizerHub, host: str, port: int) -> threa
     thread = threading.Thread(target=run_loop, daemon=True, name="ao-web-server")
     thread.start()
     return thread
+
+
+def _should_update_web(
+    *,
+    last_web_update_at: float | None,
+    started_at: float,
+    web_period_s: float,
+) -> bool:
+    """Return True when a web payload should be published this tick.
+
+    Web publishing is throttled to ``web_period_s`` (driven by ``--web-hz``)
+    and is independent of the AO tick cadence: AO ticks still run at the full
+    configured rate; only the web payload update is gated here.
+    """
+    return last_web_update_at is None or (started_at - last_web_update_at) >= web_period_s
 
 
 def _update_web_hub(
@@ -177,21 +193,31 @@ def main(argv=None) -> int:
     runtime.cloud_source.start()
     _init_bridge(runtime.bridge)
 
-    print(f"[AO_RADAR] Runtime started with {args.config.latency.ao_output_loop_hz:.1f}Hz loop", flush=True)
+    print(f"[AO_RADAR] Runtime started with {runtime.config.latency.ao_output_loop_hz:.1f}Hz loop", flush=True)
 
     last_web_update_at: float | None = None
     web_period_s = 1.0 / args.web_hz
 
     try:
-        period_s = 1.0 / runtime.config.latency.ao_output_loop_hz
+        timing = LoopTiming(
+            config=LoopTimingConfig(target_hz=runtime.config.latency.ao_output_loop_hz),
+            clock=time.monotonic,
+            sleeper=time.sleep,
+        )
         while True:
-            started = time.monotonic()
+            started = timing.mark_tick_start()
 
             # Run runtime tick
             runtime.tick()
 
-            # Update web hub at lower rate than runtime
-            if last_web_update_at is None or (started - last_web_update_at) >= web_period_s:
+            # Update web hub at lower rate than runtime. The AO tick cadence is
+            # driven by ``timing`` above and MUST NOT be reduced by --web-hz;
+            # this throttle only gates web payload publishing.
+            if _should_update_web(
+                last_web_update_at=last_web_update_at,
+                started_at=started,
+                web_period_s=web_period_s,
+            ):
                 _update_web_hub(
                     runtime,
                     hub,
@@ -201,10 +227,7 @@ def main(argv=None) -> int:
                 )
                 last_web_update_at = started
 
-            elapsed = time.monotonic() - started
-            sleep_time = max(0.0, period_s - elapsed)
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+            timing.sleep_until_next_tick(started_at=started)
     finally:
         print("[AO_RADAR] Shutting down...", flush=True)
         try:

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 
@@ -24,7 +25,7 @@ class MockCloud:
         self.empty_is_clear = False
         self.reason = "mock"
         self.received_at_s = timestamp
-        self.points_xyz = []
+        self.points_xyz = np.zeros((0, 3))
 
 
 class MockCloudSource:
@@ -38,7 +39,7 @@ class MockCloudSource:
 class MockRuntime:
     def __init__(self, wristband_state=None, radar_state="stopped", cloud=None):
         self._wristband_state = wristband_state
-        self._radar_state = radar_state
+        self._mock_radar_state = radar_state
         self.cloud_source = MockCloudSource(cloud)
         self._web_planner = None
 
@@ -46,7 +47,7 @@ class MockRuntime:
         return self._wristband_state
 
     def _radar_state(self):
-        return self._radar_state
+        return self._mock_radar_state
 
     def tick(self):
         pass
@@ -72,7 +73,7 @@ def test_update_web_hub_wristband_off_shows_status():
     latest = hub.latest()
     assert latest is not None
     assert latest["type"] == "status"
-    assert latest["payload"]["text"] == "wristband_off"
+    assert latest["payload"]["message"] == "wristband_off"
 
 
 def test_update_web_hub_wristband_unknown_shows_status():
@@ -88,7 +89,7 @@ def test_update_web_hub_wristband_unknown_shows_status():
     latest = hub.latest()
     assert latest is not None
     assert latest["type"] == "status"
-    assert latest["payload"]["text"] == "wristband_unknown"
+    assert latest["payload"]["message"] == "wristband_unknown"
 
 
 def test_update_web_hub_radar_not_running_shows_radar_state():
@@ -104,7 +105,7 @@ def test_update_web_hub_radar_not_running_shows_radar_state():
     latest = hub.latest()
     assert latest is not None
     assert latest["type"] == "status"
-    assert latest["payload"]["text"] == "radar_stopped"
+    assert latest["payload"]["message"] == "radar_stopped"
 
 
 def test_update_web_hub_cloud_missing_shows_not_ready():
@@ -120,7 +121,7 @@ def test_update_web_hub_cloud_missing_shows_not_ready():
     latest = hub.latest()
     assert latest is not None
     assert latest["type"] == "status"
-    assert latest["payload"]["text"] == "radar_not_ready"
+    assert latest["payload"]["message"] == "radar_not_ready"
 
 
 def test_update_web_hub_wristband_on_and_cloud_ready_sends_frame():
@@ -136,4 +137,11 @@ def test_update_web_hub_wristband_on_and_cloud_ready_sends_frame():
 
     latest = hub.latest()
     assert latest is not None
-    assert latest["type"] == "frame"
+    # Frame payloads are the flat visualization dict (no top-level "type"
+    # wrapper, unlike status messages); a frame is identified by its "points"
+    # field. NOTE: pre-existing web payload asymmetry -- status is wrapped as
+    # {"type":"status","payload":...} while frames are flat. Out of Task 3
+    # scope (Web payload contract); recommend separate review if symmetric
+    # wrapping is desired.
+    assert "points" in latest
+    assert latest.get("type") != "status"
