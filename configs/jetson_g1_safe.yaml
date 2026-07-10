@@ -88,35 +88,4 @@ follow:
  # 角度误差增益。azimuth 转成弧度后乘以该值生成 omega。
   angle_gain: 0.8
 
-# AO 雷达运行时配置。与上面 Robot Follow 原有值独立，互不影响。
-ao_radar:
-  alx:
-    port: /dev/ttyUSB0
-    baudrate: 115200
-    stale_timeout_s: 0.5
-  radar:
-    idle_stop_s: 5.0
-    livox_start_command: ""
-    fast_lio_start_command: ""
-    stop_timeout_s: 3.0
-    ready_timeout_s: 10.0
-  latency:
-    ao_output_loop_hz: 20.0
-    max_command_age_s: 0.2
-    max_cloud_age_s: 0.5
-    max_ao_process_ms: 20.0
-    max_g1_dispatch_ms: 30.0
-    warn_loop_dt_ms: 75.0
-    hard_loop_dt_ms: 150.0
-  output:
-    mode: mock
-    require_real_g1_confirmation: true
-    confirm_real_g1: false
-    network_interface: eth0
-  logging:
-    enabled: true
-    csv_path: logs/ao_radar_frames.csv
-    timestamped_runs: true
-    filename_time_format: "%Y%m%d_%H%M%S"
-    log_every_n_frames: 1
-    terminal_summary_interval_s: 0.5
+
