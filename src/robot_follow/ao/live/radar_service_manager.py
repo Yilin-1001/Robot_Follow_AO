@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
@@ -9,6 +11,8 @@ from robot_follow.ao.config import AORadarServiceConfig
 
 
 class ManagedProcess(Protocol):
+    pid: int
+
     def poll(self):
         pass
 
@@ -36,6 +40,7 @@ class RadarServiceState(str, Enum):
 class RadarServiceManager:
     config: AORadarServiceConfig
     popen_factory: PopenFactory = subprocess.Popen
+    signal_process_group: Callable[[int, int], None] = os.killpg
 
     def __post_init__(self) -> None:
         self._livox: Optional[ManagedProcess] = None
@@ -57,12 +62,14 @@ class RadarServiceManager:
         if not self.config.fast_lio_start_command:
             raise ValueError("ao_radar.radar.fast_lio_start_command must be configured")
         if self._livox is None or self._livox.poll() is not None:
+            self._stop_process(self._livox)
             self._livox = self.popen_factory(
                 self.config.livox_start_command,
                 shell=True,
                 start_new_session=True,
             )
         if self._fast_lio is None or self._fast_lio.poll() is not None:
+            self._stop_process(self._fast_lio)
             self._fast_lio = self.popen_factory(
                 self.config.fast_lio_start_command,
                 shell=True,
@@ -82,11 +89,24 @@ class RadarServiceManager:
         self._livox = None
 
     def _stop_process(self, process: Optional[ManagedProcess]) -> None:
-        if process is None or process.poll() is not None:
+        if process is None:
             return
-        process.terminate()
+
+        # ``ros2 launch`` starts a tree of processes.  Because it is launched
+        # in a new session, terminating only the shell returned by Popen can
+        # leave ROS nodes alive and still publishing point clouds.  Signal the
+        # whole process group (whose id is the session leader's pid) instead.
+        try:
+            self.signal_process_group(process.pid, signal.SIGTERM)
+        except (AttributeError, ProcessLookupError):
+            if process.poll() is None:
+                process.terminate()
         try:
             process.wait(timeout=self.config.stop_timeout_s)
         except subprocess.TimeoutExpired:
-            process.kill()
+            try:
+                self.signal_process_group(process.pid, signal.SIGKILL)
+            except (AttributeError, ProcessLookupError):
+                if process.poll() is None:
+                    process.kill()
             process.wait(timeout=1.0)

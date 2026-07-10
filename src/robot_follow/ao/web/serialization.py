@@ -99,11 +99,16 @@ def visualization_payload(
     zone_bounds=None,
 ) -> dict:
     report_data = obstacle_report_to_dict(report)
+    age_reference = (
+        raw_frame.timestamp
+        if raw_frame.received_at_s is None
+        else raw_frame.received_at_s
+    )
     payload = {
         "timestamp": float(filtered_frame.timestamp),
         "frame_id": filtered_frame.frame_id,
         "radar_valid": bool(report.valid),
-        "radar_age_s": round(max(0.0, float(now_s) - float(raw_frame.timestamp)), 3),
+        "radar_age_s": round(max(0.0, float(now_s) - float(age_reference)), 3),
         "raw_count": int(raw_count),
         "filtered_count": int(filtered_count),
         "points": point_cloud_to_json_points(filtered_frame, max_points=max_points),

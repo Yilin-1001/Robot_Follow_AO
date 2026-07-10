@@ -104,7 +104,11 @@ def preprocess_point_cloud(
 
 
 def frame_age_s(frame: PointCloudFrame, *, now_s: float) -> float:
-    return float(now_s - frame.timestamp)
+    # ROS message stamps commonly use wall/ROS time, while the live runtime
+    # uses monotonic time.  Compare like-for-like clocks when the subscriber
+    # recorded a monotonic receive timestamp.
+    reference = frame.timestamp if frame.received_at_s is None else frame.received_at_s
+    return float(now_s - reference)
 
 
 def invalidate_stale_frame(

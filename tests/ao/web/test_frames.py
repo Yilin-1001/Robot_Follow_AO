@@ -67,6 +67,32 @@ def test_build_visualization_payload_stops_on_stale_frame():
     assert payload["decision"]["reason"] == "pointcloud_timeout"
 
 
+def test_live_frame_uses_monotonic_receive_time_for_staleness_and_clears_points():
+    cfg = AppConfig.default()
+    frame = PointCloudFrame(
+        timestamp=1_800_000_000.0,
+        frame_id="body",
+        points_xyz=np.array([[0.30, 0.0, -0.2]], dtype=np.float64),
+        valid=True,
+        empty_is_clear=False,
+        reason="fast_lio_body",
+        received_at_s=10.0,
+    )
+
+    payload = build_visualization_payload(
+        frame,
+        command_source=ConstantCommandSource(),
+        config=cfg,
+        now_s=10.0 + cfg.radar.timeout_s + 0.01,
+        min_points=1,
+    )
+
+    assert payload["radar_valid"] is False
+    assert payload["radar_age_s"] == cfg.radar.timeout_s + 0.01
+    assert payload["points"] == []
+    assert payload["decision"]["reason"] == "pointcloud_timeout"
+
+
 def test_build_visualization_payload_can_simulate_sdk_stateful_early_avoidance():
     cfg = AppConfig.default()
     planner = StatefulAvoidancePlanner(cfg)
