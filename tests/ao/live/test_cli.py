@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from robot_follow.ao.live.cli import MockMotionBridge, build_runtime_from_config
+from robot_follow.ao.live.loop_timing import LoopTimingConfig
 
 
 def test_real_g1_requires_explicit_confirmation(tmp_path: Path) -> None:
@@ -147,3 +148,9 @@ def test_rejects_unknown_output_mode(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="mode"):
         build_runtime_from_config(path)
+
+
+def test_ao_cli_40hz_period_is_25ms() -> None:
+    config = LoopTimingConfig(target_hz=40.0)
+
+    assert config.period_s == 0.025

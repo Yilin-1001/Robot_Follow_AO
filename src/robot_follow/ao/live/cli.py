@@ -16,6 +16,7 @@ from robot_follow.ao.avoidance.planner import AvoidancePlanner
 from robot_follow.ao.config import load_ao_radar_configs
 from robot_follow.ao.logging.csv_logger import AORadarCSVLogger, timestamped_log_path
 from robot_follow.ao.live.fast_lio_source import FastLIOPointCloudSource
+from robot_follow.ao.live.loop_timing import LoopTiming, LoopTimingConfig
 from robot_follow.ao.live.radar_service_manager import RadarServiceManager
 from robot_follow.ao.live.runtime import AORadarRuntime
 from robot_follow.core import FollowPipeline, SafetyManager, TargetFilter
@@ -180,9 +181,13 @@ def main(argv: list[str] | None = None) -> int:
         runtime.cloud_source.start()
         _init_bridge(runtime.bridge)
 
-        period_s = 1.0 / runtime.config.latency.ao_output_loop_hz
+        timing = LoopTiming(
+            config=LoopTimingConfig(target_hz=runtime.config.latency.ao_output_loop_hz),
+            clock=time.monotonic,
+            sleeper=time.sleep,
+        )
         while True:
-            started = time.monotonic()
+            started = timing.mark_tick_start()
             runtime.tick()
             if logger is not None and runtime.last_frame is not None:
                 logger.write(runtime.last_frame.to_log_row())
@@ -191,10 +196,7 @@ def main(argv: list[str] | None = None) -> int:
                 last_summary_at=last_summary_at,
                 now=started,
             )
-            elapsed = time.monotonic() - started
-            sleep_time = max(0.0, period_s - elapsed)
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+            timing.sleep_until_next_tick(started_at=started)
     finally:
         try:
             runtime.cloud_source.stop()
