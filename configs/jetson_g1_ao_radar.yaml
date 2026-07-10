@@ -1,4 +1,9 @@
 # Dedicated Robot Follow AO Radar live config.
+#
+# It can be used alone, or as the final overlay after jetson_g1_safe.yaml:
+#   robot-follow-ao-radar --config configs/jetson_g1_safe.yaml \
+#     --config configs/jetson_g1_ao_radar.yaml
+# Values in this file override matching values from the earlier file.
 # Default output is mock so this file can be used for full ALX + FAST-LIO
 # dry-runs without touching the G1 SDK. Set output.mode=g1 and
 # confirm_real_g1=true only for deliberate low-speed real-G1 tests.
@@ -8,6 +13,39 @@ ao_radar:
     port: /dev/ttyUSB0
     baudrate: 115200
     stale_timeout_s: 0.5
+  # ALX 测距/方位低通滤波；越大越灵敏，越小越平滑。
+  filter:
+    alpha: 0.65
+  # 跟随控制。目标在 target_distance_m ± hold_tolerance_m 时保持距离。
+  follow:
+    target_distance_m: 1.0
+    min_safe_distance_m: 0.15
+    hold_tolerance_m: 0.0
+    max_forward_vx: 2.0
+    max_backward_vx: 2.0
+    max_follow_distance_m: 50.0
+    max_omega: 3.0
+    angle_deadzone_deg: 7.0
+    large_angle_deg: 25.0
+    distance_gain_forward: 0.5
+    distance_gain_backward: 0.8
+    angle_gain: 0.8
+  # ALX 数据安全检查。follow.min_safe_distance_m 应与这里保持一致。
+  safety:
+    data_timeout_s: 0.5
+    min_safe_distance_m: 0.15
+    max_distance_jump_m: 0.5
+    max_angle_jump_deg: 45.0
+  # G1 实际输出限幅；即使 follow 输出更大，也会在此被截断。
+  g1:
+    max_vx: 3.0
+    max_omega: 2.0
+    yaw_sign: 1
+    sdk_timeout_s: 10.0
+    sdk_timeout_code: 3104
+    sdk_timeout_retry_interval_s: 1.0
+    max_consecutive_sdk_timeouts: 3
+    command_timeout_s: 0.5
   radar:
     idle_stop_s: 5.0
     livox_start_command: "ros2 launch livox_ros_driver2 msg_MID360_launch.py"

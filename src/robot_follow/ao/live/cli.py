@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from robot_follow.ao.avoidance.planner import AvoidancePlanner
-from robot_follow.ao.config import load_ao_radar_config
+from robot_follow.ao.config import load_ao_radar_configs
 from robot_follow.ao.logging.csv_logger import AORadarCSVLogger, timestamped_log_path
 from robot_follow.ao.live.fast_lio_source import FastLIOPointCloudSource
 from robot_follow.ao.live.radar_service_manager import RadarServiceManager
@@ -23,6 +23,7 @@ from robot_follow.core.types import MotionCommand
 from robot_follow.core.follow_controller import FollowController, FollowConfig
 from robot_follow.core.safety import SafetyConfig
 from robot_follow.real.alx_source import ALXLiveSource
+from robot_follow.real.g1 import G1BridgeConfig
 from robot_follow.real.g1.bridge import G1MotionBridge
 
 
@@ -45,12 +46,13 @@ class MockMotionBridge:
         print("[AO_OUTPUT] mode=mock closed", flush=True)
 
 
-def build_runtime_from_config(config_path: Path) -> AORadarRuntime:
+def build_runtime_from_config(config_paths: Path | list[Path]) -> AORadarRuntime:
     """Build the AO radar runtime from a config file.
 
     Raises ValueError if real G1 output is requested but not confirmed.
     """
-    config = load_ao_radar_config(config_path)
+    paths = [config_paths] if isinstance(config_paths, Path) else config_paths
+    config = load_ao_radar_configs(paths)
     if config.output.mode not in {"mock", "g1"}:
         raise ValueError("ao_radar.output.mode must be 'mock' or 'g1'")
     if (
@@ -62,9 +64,31 @@ def build_runtime_from_config(config_path: Path) -> AORadarRuntime:
 
     alx_source = ALXLiveSource(port=config.alx.port, baudrate=config.alx.baudrate)
     pipeline = FollowPipeline(
-        target_filter=TargetFilter(),
-        safety=SafetyManager(SafetyConfig()),
-        controller=FollowController(FollowConfig()),
+        target_filter=TargetFilter(alpha=config.filter.alpha),
+        safety=SafetyManager(
+            SafetyConfig(
+                data_timeout_s=config.safety.data_timeout_s,
+                min_safe_distance_m=config.safety.min_safe_distance_m,
+                max_distance_jump_m=config.safety.max_distance_jump_m,
+                max_angle_jump_deg=config.safety.max_angle_jump_deg,
+            )
+        ),
+        controller=FollowController(
+            FollowConfig(
+                target_distance_m=config.follow.target_distance_m,
+                min_safe_distance_m=config.follow.min_safe_distance_m,
+                hold_tolerance_m=config.follow.hold_tolerance_m,
+                max_forward_vx=config.follow.max_forward_vx,
+                max_backward_vx=config.follow.max_backward_vx,
+                max_follow_distance_m=config.follow.max_follow_distance_m,
+                max_omega=config.follow.max_omega,
+                angle_deadzone_deg=config.follow.angle_deadzone_deg,
+                large_angle_deg=config.follow.large_angle_deg,
+                distance_gain_forward=config.follow.distance_gain_forward,
+                distance_gain_backward=config.follow.distance_gain_backward,
+                angle_gain=config.follow.angle_gain,
+            )
+        ),
     )
     radar_manager = RadarServiceManager(config.radar)
     cloud_source = FastLIOPointCloudSource()
@@ -100,7 +124,19 @@ def build_runtime_from_config(config_path: Path) -> AORadarRuntime:
     bridge = (
         MockMotionBridge()
         if config.output.mode == "mock"
-        else G1MotionBridge(network_interface=config.output.network_interface)
+        else G1MotionBridge(
+            network_interface=config.output.network_interface,
+            config=G1BridgeConfig(
+                max_abs_vx=config.g1.max_vx,
+                max_abs_omega=config.g1.max_omega,
+                yaw_sign=config.g1.yaw_sign,
+                sdk_timeout_s=config.g1.sdk_timeout_s,
+                sdk_timeout_code=config.g1.sdk_timeout_code,
+                sdk_timeout_retry_interval_s=config.g1.sdk_timeout_retry_interval_s,
+                max_consecutive_sdk_timeouts=config.g1.max_consecutive_sdk_timeouts,
+                command_timeout_s=config.g1.command_timeout_s,
+            ),
+        )
     )
 
     return AORadarRuntime(
@@ -124,12 +160,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/jetson_g1_safe.yaml"),
-        help="Path to YAML config file",
+        action="append",
+        default=None,
+        help=(
+            "YAML config path; may be specified more than once. "
+            "Later files override earlier values."
+        ),
     )
     args = parser.parse_args(argv)
 
-    runtime = build_runtime_from_config(args.config)
+    config_paths = args.config or [Path("configs/jetson_g1_ao_radar.yaml")]
+    runtime = build_runtime_from_config(config_paths)
     logger = _build_logger(runtime.config)
     last_summary_at: float | None = None
     try:

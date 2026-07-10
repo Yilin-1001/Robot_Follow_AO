@@ -34,8 +34,9 @@ def test_g1_bridge_uses_configured_network_interface(tmp_path: Path, monkeypatch
     captured = {}
 
     class FakeG1MotionBridge:
-        def __init__(self, network_interface: str) -> None:
+        def __init__(self, network_interface: str, config) -> None:
             captured["network_interface"] = network_interface
+            captured["config"] = config
 
         def close(self) -> None:
             pass
@@ -48,6 +49,72 @@ def test_g1_bridge_uses_configured_network_interface(tmp_path: Path, monkeypatch
     build_runtime_from_config(path)
 
     assert captured["network_interface"] == "eth0"
+    assert captured["config"].max_abs_vx == 0.10
+    assert captured["config"].max_abs_omega == 0.30
+
+
+def test_runtime_uses_follow_safety_filter_and_g1_yaml_settings(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "ao_radar:\n"
+        "  output:\n"
+        "    mode: g1\n"
+        "    require_real_g1_confirmation: true\n"
+        "    confirm_real_g1: true\n"
+        "  filter:\n"
+        "    alpha: 0.60\n"
+        "  follow:\n"
+        "    target_distance_m: 1.2\n"
+        "    max_forward_vx: 0.16\n"
+        "  safety:\n"
+        "    min_safe_distance_m: 0.35\n"
+        "  g1:\n"
+        "    max_vx: 0.07\n"
+        "    max_omega: 0.18\n",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class FakeG1MotionBridge:
+        def __init__(self, network_interface: str, config) -> None:
+            captured["config"] = config
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("robot_follow.ao.live.cli.G1MotionBridge", FakeG1MotionBridge)
+
+    runtime = build_runtime_from_config(path)
+
+    assert runtime.pipeline.filter.alpha == 0.60
+    assert runtime.pipeline.controller.config.target_distance_m == 1.2
+    assert runtime.pipeline.controller.config.max_forward_vx == 0.16
+    assert runtime.pipeline.safety.config.min_safe_distance_m == 0.35
+    assert captured["config"].max_abs_vx == 0.07
+    assert captured["config"].max_abs_omega == 0.18
+
+
+def test_runtime_accepts_ordered_config_overlays(tmp_path: Path) -> None:
+    base = tmp_path / "base.yaml"
+    base.write_text(
+        "follow:\n"
+        "  target_distance_m: 1.8\n"
+        "ao_radar:\n"
+        "  output:\n"
+        "    mode: mock\n",
+        encoding="utf-8",
+    )
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text(
+        "ao_radar:\n"
+        "  follow:\n"
+        "    target_distance_m: 1.2\n",
+        encoding="utf-8",
+    )
+
+    runtime = build_runtime_from_config([base, overlay])
+
+    assert runtime.pipeline.controller.config.target_distance_m == 1.2
 
 
 def test_mock_mode_uses_mock_bridge(tmp_path: Path, monkeypatch) -> None:

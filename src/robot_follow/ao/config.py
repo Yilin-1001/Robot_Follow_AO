@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, TypeVar
+from typing import Any, Dict, Sequence, TypeVar
 
 import yaml
 
@@ -26,6 +26,55 @@ class AOALXConfig:
     port: str = "/dev/ttyUSB0"
     baudrate: int = 115200
     stale_timeout_s: float = 0.5
+
+
+@dataclass(frozen=True)
+class AOFilterConfig:
+    """ALX target low-pass filter settings used by the AO live runner."""
+
+    alpha: float = 0.35
+
+
+@dataclass(frozen=True)
+class AOFollowConfig:
+    """Person-follow controller settings used by the AO live runner."""
+
+    target_distance_m: float = 1.5
+    min_safe_distance_m: float = 0.5
+    hold_tolerance_m: float = 0.15
+    max_forward_vx: float = 0.20
+    max_backward_vx: float = 0.12
+    max_follow_distance_m: float = 4.0
+    max_omega: float = 0.60
+    angle_deadzone_deg: float = 7.0
+    large_angle_deg: float = 20.0
+    distance_gain_forward: float = 0.18
+    distance_gain_backward: float = 0.15
+    angle_gain: float = 0.5
+
+
+@dataclass(frozen=True)
+class AOSafetyConfig:
+    """Target-data safety checks applied before follow control."""
+
+    data_timeout_s: float = 0.5
+    min_safe_distance_m: float = 0.5
+    max_distance_jump_m: float = 0.5
+    max_angle_jump_deg: float = 45.0
+
+
+@dataclass(frozen=True)
+class AOG1Config:
+    """G1 bridge limits and SDK timeout policy for the AO live runner."""
+
+    max_vx: float = 0.10
+    max_omega: float = 0.30
+    yaw_sign: int = 1
+    sdk_timeout_s: float = 10.0
+    sdk_timeout_code: int = 3104
+    sdk_timeout_retry_interval_s: float = 1.0
+    max_consecutive_sdk_timeouts: int = 3
+    command_timeout_s: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -69,6 +118,10 @@ class AOLoggingConfig:
 @dataclass(frozen=True)
 class AORadarConfig:
     alx: AOALXConfig = field(default_factory=AOALXConfig)
+    filter: AOFilterConfig = field(default_factory=AOFilterConfig)
+    follow: AOFollowConfig = field(default_factory=AOFollowConfig)
+    safety: AOSafetyConfig = field(default_factory=AOSafetyConfig)
+    g1: AOG1Config = field(default_factory=AOG1Config)
     radar: AORadarServiceConfig = field(default_factory=AORadarServiceConfig)
     latency: AOLatencyConfig = field(default_factory=AOLatencyConfig)
     output: AOOutputConfig = field(default_factory=AOOutputConfig)
@@ -79,15 +132,74 @@ T = TypeVar("T")
 
 
 def load_ao_radar_config(path: Path) -> AORadarConfig:
-    raw = load_yaml_config(path)
-    section = _mapping_section(raw, "ao_radar")
+    """Load one AO configuration file (backward-compatible convenience API)."""
+    return load_ao_radar_configs([path])
+
+
+def load_ao_radar_configs(paths: Sequence[Path]) -> AORadarConfig:
+    """Load and deep-merge AO configuration files in command-line order.
+
+    Later files override earlier values at the individual-field level.  A
+    legacy top-level ``alx``, ``filter``, ``follow``, ``safety``, or ``g1``
+    section is treated as AO input too, so ``jetson_g1_safe.yaml`` can be used
+    as a base configuration.  Its ``g1.net_iface`` is mapped to
+    ``ao_radar.output.network_interface`` and its ALX-only ``hz`` setting is
+    ignored by the AO runner.
+    """
+    if not paths:
+        raise ValueError("at least one AO config path is required")
+
+    section: ConfigMapping = {}
+    for path in paths:
+        _deep_merge(section, _ao_config_layer(load_yaml_config(path)))
+
     return AORadarConfig(
         alx=_dataclass_from_section(section, "alx", AOALXConfig),
+        filter=_dataclass_from_section(section, "filter", AOFilterConfig),
+        follow=_dataclass_from_section(section, "follow", AOFollowConfig),
+        safety=_dataclass_from_section(section, "safety", AOSafetyConfig),
+        g1=_dataclass_from_section(section, "g1", AOG1Config),
         radar=_dataclass_from_section(section, "radar", AORadarServiceConfig),
         latency=_dataclass_from_section(section, "latency", AOLatencyConfig),
         output=_dataclass_from_section(section, "output", AOOutputConfig),
         logging=_dataclass_from_section(section, "logging", AOLoggingConfig),
     )
+
+
+def _ao_config_layer(raw: ConfigMapping) -> ConfigMapping:
+    """Extract AO-relevant settings from one mixed legacy/AO YAML file."""
+    layer: ConfigMapping = {}
+    for key in ("alx", "filter", "follow", "safety", "g1"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, dict):
+            raise ValueError(f"config section '{key}' must be a mapping")
+        legacy_section = dict(value)
+        if key == "alx":
+            legacy_section.pop("hz", None)
+        if key == "g1":
+            network_interface = legacy_section.pop("net_iface", None)
+            if network_interface is not None:
+                layer["output"] = {"network_interface": network_interface}
+        if legacy_section:
+            layer[key] = legacy_section
+
+    ao_section = _mapping_section(raw, "ao_radar")
+    _deep_merge(layer, ao_section)
+    return layer
+
+
+def _deep_merge(target: ConfigMapping, overlay: ConfigMapping) -> None:
+    """Merge mappings recursively, replacing non-mapping values from overlay."""
+    for key, value in overlay.items():
+        existing = target.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            _deep_merge(existing, value)
+        elif isinstance(value, dict):
+            target[key] = dict(value)
+        else:
+            target[key] = value
 
 
 def _mapping_section(config: ConfigMapping, key: str) -> ConfigMapping:
