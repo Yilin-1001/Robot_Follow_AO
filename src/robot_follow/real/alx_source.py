@@ -70,6 +70,11 @@ class ALXLiveSource:
         with self._lock:
             return self._wristband_state
 
+    def _update_wristband_state(self, state: WristbandGateState) -> None:
+        """Receive ON/OFF transitions even when no parsed sample is yielded."""
+        with self._lock:
+            self._wristband_state = state
+
     def start(self) -> None:
         """Start the background reader thread."""
         if self._thread is not None and self._thread.is_alive():
@@ -139,6 +144,7 @@ class ALXLiveSource:
                 port=self.port,
                 baudrate=self.baudrate,
                 timeout=self.timeout,
+                wristband_state_callback=self._update_wristband_state,
             )
             self._reader = reader
             try:
@@ -148,8 +154,7 @@ class ALXLiveSource:
                 for parsed in reader.read_samples():
                     if self._stop.is_set():
                         break
-                    with self._lock:
-                        self._wristband_state = reader.wristband_state()
+                    self._update_wristband_state(reader.wristband_state())
                     if isinstance(parsed, PositionSample):
                         self._update_position(parsed)
                     elif isinstance(parsed, HeartbeatSample):
@@ -164,8 +169,7 @@ class ALXLiveSource:
                     state = reader.wristband_state()
                 except Exception:
                     state = WristbandGateState(enabled=False, updated_at=time.monotonic())
-                with self._lock:
-                    self._wristband_state = state
+                self._update_wristband_state(state)
                 try:
                     reader.close()
                 except Exception:

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://aka.ms/codetour-schema",
+  "title": "Wristband to Radar Service Gate — New Joiner",
+  "description": "Follow the live control path from ALX-G100 serial bytes through the AO gate to Livox and FAST-LIO process-group shutdown.",
+  "ref": "develop",
+  "steps": [
+    {
+      "file": "configs/jetson_g1_ao_radar.yaml",
+      "line": 6,
+      "title": "The live configuration",
+      "description": "The dedicated AO configuration binds the ALX serial port and names the two ROS launch commands controlled by the gate. The 20 Hz AO loop reads these values at startup; the standalone Web viewer does not own them."
+    },
+    {
+      "file": "src/robot_follow/ao/live/cli.py",
+      "line": 48,
+      "title": "Runtime composition",
+      "description": "The CLI loads the configuration and constructs one ALXLiveSource plus one RadarServiceManager. Keeping both in the same runtime is what lets a wristband state transition control the exact ROS processes that this AO invocation started."
+    },
+    {
+      "file": "src/robot_follow/ao/live/cli.py",
+      "line": 135,
+      "title": "The 20 Hz supervisor loop",
+      "description": "Startup opens the ALX reader and point-cloud subscriber, then calls runtime.tick() at the configured frequency. The gate is therefore evaluated every control cycle, independently of browser refreshes."
+    },
+    {
+      "file": "src/robot_follow/serial_reader.py",
+      "line": 100,
+      "title": "Recognizing wristband ON",
+      "description": "A complete 0x25-byte ALX position frame with signature 20 01 01 02 is treated as wristband ON. The frame is still parsed as position data, so one packet both opens the gate and refreshes the target snapshot."
+    },
+    {
+      "file": "src/robot_follow/serial_reader.py",
+      "line": 131,
+      "title": "Recognizing explicit OFF",
+      "description": "The parser searches for a 0x10-byte frame carrying signature 20 02 01 02. It consumes that frame and records enabled=False immediately; explicit OFF takes priority over ordinary position parsing."
+    },
+    {
+      "file": "src/robot_follow/real/alx_source.py",
+      "line": 142,
+      "title": "Publishing the parsed gate state",
+      "description": "The serial reader now pushes every ON/OFF transition through a callback into a lock-protected cache, including explicit OFF frames that yield no position sample. The AO loop reads this cache without blocking on USB serial I/O. On reader teardown it preserves the last reported state, with a fail-safe OFF fallback if the reader cannot provide one."
+    },
+    {
+      "file": "src/robot_follow/ao/live/runtime.py",
+      "line": 81,
+      "title": "OFF and unknown are fail-safe",
+      "description": "Gate evaluation is deliberately the first operation in tick(). False calls radar_manager.stop() immediately and dispatches a G1 stop reasoned wristband_off. None never starts radar and dispatches wristband_unknown."
+    },
+    {
+      "file": "src/robot_follow/ao/live/runtime.py",
+      "line": 99,
+      "title": "ON still requires fresh positioning",
+      "description": "True only permits the next checks; it does not blindly start radar. The ALX snapshot must exist, have no serial error, and be no older than stale_timeout_s. Fresh position data updates the manager heartbeat before ensure_running()."
+    },
+    {
+      "file": "src/robot_follow/ao/live/radar_service_manager.py",
+      "line": 59,
+      "title": "Starting Livox and FAST-LIO",
+      "description": "ensure_running() launches Livox first and FAST-LIO second. Each command uses start_new_session=True, making a separate process group; repeated ON frames are idempotent because live process handles are reused."
+    },
+    {
+      "file": "src/robot_follow/ao/live/radar_service_manager.py",
+      "line": 85,
+      "title": "Stopping the complete ROS process trees",
+      "description": "stop() shuts down FAST-LIO before Livox. SIGTERM is sent to each entire process group, not only the outer shell; after stop_timeout_s the group receives SIGKILL. This prevents orphan ROS nodes from continuing to publish /cloud_registered_body after wristband OFF."
+    },
+    {
+      "file": "src/robot_follow/ao/live/cli.py",
+      "line": 155,
+      "title": "Shutdown safety net",
+      "description": "If AO exits for any reason, the finally chain stops the point-cloud subscriber, serial reader, managed radar services, robot bridge, and logger. This is a second cleanup path in addition to live wristband OFF handling."
+    }
+  ]
+}

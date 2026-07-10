@@ -4,7 +4,17 @@ import time
 
 from robot_follow.alx_g100_protocol import COMMAND_POSITION, PositionSample
 from robot_follow.real.alx_source import ALXLiveSource
-from robot_follow.serial_reader import WristbandGateState
+from robot_follow.serial_reader import ALXG100SerialReader, WristbandGateState
+
+
+POSITION_FRAME = bytes.fromhex(
+    "FF FF FF FF 00 25 34 7E 20 01 01 02 "
+    "00 00 10 AA 00 00 10 AA 00 00 01 EA "
+    "FF A8 00 25 12 34 00 0C BE 00 00 00 40"
+)
+OFF_FRAME = bytes.fromhex(
+    "FF FF FF FF 00 10 0A 6B 20 02 01 02 00 00 10 AA"
+)
 
 
 class RecoveringReader:
@@ -122,3 +132,45 @@ def test_live_source_exposes_cached_wristband_state() -> None:
 
     assert source.wristband_state().enabled is True
     assert source.wristband_state().updated_at == 123.0
+
+
+class ScriptedSerial:
+    def __init__(self) -> None:
+        self.is_open = True
+        self._reads = [POSITION_FRAME, OFF_FRAME]
+
+    def read(self, _size):
+        if self._reads:
+            return self._reads.pop(0)
+        time.sleep(0.001)
+        return b""
+
+    def close(self) -> None:
+        self.is_open = False
+
+
+class ProtocolGateReader(ALXG100SerialReader):
+    def open(self) -> None:
+        self._serial = ScriptedSerial()
+
+
+def test_explicit_off_reaches_live_source_without_followup_position_sample() -> None:
+    source = ALXLiveSource(reader_factory=ProtocolGateReader)
+
+    source.start()
+    try:
+        state = _wait_for(
+            lambda: (
+                current
+                if (current := source.wristband_state()).enabled is False
+                else None
+            )
+        )
+        snapshot = source.snapshot()
+    finally:
+        source.stop()
+
+    assert state is not None
+    assert state.updated_at is not None
+    assert snapshot is not None
+    assert snapshot.distance_m == 4.9

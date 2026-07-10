@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 import serial
 
@@ -25,7 +25,13 @@ class WristbandGateState:
 class ALXG100SerialReader:
     WRISTBAND_ON_PRINT_INTERVAL_S = 0.25
 
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.05):
+    def __init__(
+        self,
+        port: str,
+        baudrate: int = 115200,
+        timeout: float = 0.05,
+        wristband_state_callback: Optional[Callable[[WristbandGateState], None]] = None,
+    ):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
@@ -34,6 +40,7 @@ class ALXG100SerialReader:
         self._wristband_enabled: Optional[bool] = None
         self._wristband_updated_at: Optional[float] = None
         self._last_wristband_on_print_s = 0.0
+        self._wristband_state_callback = wristband_state_callback
 
     def wristband_state(self) -> WristbandGateState:
         return WristbandGateState(
@@ -155,9 +162,16 @@ class ALXG100SerialReader:
             self._last_wristband_on_print_s = now
         self._wristband_enabled = True
         self._wristband_updated_at = now
+        self._notify_wristband_state()
 
     def _emit_wristband_off(self) -> None:
         now = time.monotonic()
         print("[WRISTBAND] OFF", flush=True)
         self._wristband_enabled = False
         self._wristband_updated_at = now
+        self._notify_wristband_state()
+
+    def _notify_wristband_state(self) -> None:
+        callback = self._wristband_state_callback
+        if callback is not None:
+            callback(self.wristband_state())

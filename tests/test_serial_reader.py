@@ -123,3 +123,18 @@ def test_off_frame_updates_wristband_state_to_off() -> None:
 
     assert state.enabled is False
     assert state.updated_at is not None
+
+
+def test_off_frame_notifies_state_callback_without_yielding_sample() -> None:
+    transitions = []
+    reader = ALXG100SerialReader(
+        "/dev/ttyUSB0",
+        wristband_state_callback=transitions.append,
+    )
+    reader._buffer.extend(
+        bytes.fromhex("FF FF FF FF 00 10 0A 6B 20 02 01 02 00 00 10 AA")
+    )
+
+    assert reader._try_pop_sample() is None
+    assert [state.enabled for state in transitions] == [False]
+    assert transitions[0].updated_at is not None
