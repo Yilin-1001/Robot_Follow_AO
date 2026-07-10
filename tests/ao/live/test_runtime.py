@@ -25,6 +25,7 @@ class FakeSnapshot:
     timestamp: float
     distance_m: float = 1.0
     azimuth_deg: float = 0.0
+    tag_status: int = 0
     error: Optional[str] = None
 
     def age_s(self, now=None) -> float:
@@ -105,6 +106,7 @@ class FakeBridge:
         self.commands = []
         self.ticks = []
         self.last_sent_omega = None
+        self.attitude_state = None
 
     def dispatch(self, command: MotionCommand) -> None:
         self.commands.append(command)
@@ -154,6 +156,11 @@ def test_fresh_position_starts_radar_and_dispatches_safe_command() -> None:
 
 def test_frame_logs_raw_filtered_and_output_azimuth_diagnostics() -> None:
     bridge = FakeBridge()
+    bridge.attitude_state = type(
+        "AttitudeState",
+        (),
+        {"yaw_deg": 42.5, "yaw_rate_rps": -0.27},
+    )()
     filtered = FilteredTarget(
         distance_m=1.2,
         azimuth_deg=18.5,
@@ -164,7 +171,12 @@ def test_frame_logs_raw_filtered_and_output_azimuth_diagnostics() -> None:
     runtime = AORadarRuntime(
         config=config(),
         alx_source=FakeALXSource(
-            FakeSnapshot(timestamp=99.95, azimuth_deg=30.0),
+            FakeSnapshot(
+                timestamp=99.95,
+                distance_m=1.25,
+                azimuth_deg=30.0,
+                tag_status=3,
+            ),
             wristband_state=FakeWristbandState(enabled=True, updated_at=99.9),
         ),
         pipeline=FakePipeline(
@@ -185,10 +197,18 @@ def test_frame_logs_raw_filtered_and_output_azimuth_diagnostics() -> None:
     assert runtime.last_frame.raw_azimuth_deg == pytest.approx(30.0)
     assert runtime.last_frame.filtered_azimuth_deg == pytest.approx(18.5)
     assert runtime.last_frame.g1_sent_omega == pytest.approx(0.25)
+    assert runtime.last_frame.distance_m == pytest.approx(1.25)
+    assert runtime.last_frame.tag_status == 3
+    assert runtime.last_frame.robot_yaw_deg == pytest.approx(42.5)
+    assert runtime.last_frame.robot_yaw_rate_rps == pytest.approx(-0.27)
     row = runtime.last_frame.to_log_row()
     assert row.raw_azimuth_deg == pytest.approx(30.0)
     assert row.filtered_azimuth_deg == pytest.approx(18.5)
     assert row.g1_sent_omega == pytest.approx(0.25)
+    assert row.distance_m == pytest.approx(1.25)
+    assert row.tag_status == 3
+    assert row.robot_yaw_deg == pytest.approx(42.5)
+    assert row.robot_yaw_rate_rps == pytest.approx(-0.27)
 
 
 def test_stale_position_stops_g1_and_does_not_start_radar() -> None:
@@ -244,7 +264,18 @@ def test_missing_or_stale_cloud_stops_before_ao_planner() -> None:
 
 class SlowClock:
     def __init__(self):
-        self.values = iter([100.0, 100.0, 100.05, 100.05, 100.05])
+        self.values = iter(
+            [
+                100.0,
+                100.0,
+                100.0,
+                100.05,
+                100.05,
+                100.05,
+                100.05,
+                100.05,
+            ]
+        )
 
     def __call__(self) -> float:
         return next(self.values)
@@ -410,3 +441,72 @@ def test_cloud_freshness_uses_received_at_when_available() -> None:
     assert bridge.commands[-1].kind == "move"
     assert runtime.last_frame is not None
     assert runtime.last_frame.cloud_age_ms == pytest.approx(100.0)
+
+
+class SequenceClock:
+    def __init__(self, values):
+        self._values = iter(values)
+
+    def __call__(self):
+        return next(self._values)
+
+
+def test_successful_tick_logs_raw_safe_and_g1_same_tick_timing() -> None:
+    bridge = FakeBridge()
+    runtime = AORadarRuntime(
+        config=config(),
+        alx_source=FakeALXSource(
+            FakeSnapshot(timestamp=99.990),
+            wristband_state=FakeWristbandState(enabled=True, updated_at=99.9),
+        ),
+        pipeline=FakePipeline(
+            command=MotionCommand(kind="move", vx=0.2, vy=0.0, omega=0.1, reason="follow")
+        ),
+        radar_manager=FakeRadarManager(),
+        cloud_source=FakeCloudSource(PointCloudFrame(timestamp=99.990, points=[])),
+        radar_pipeline=FakeRadarPipeline(),
+        planner=FakePlanner(),
+        bridge=bridge,
+        clock=SequenceClock([100.000, 100.002, 100.004, 100.005, 100.007, 100.008]),
+    )
+
+    runtime.tick()
+
+    frame = runtime.last_frame
+    assert frame is not None
+    assert frame.raw_command is not None
+    assert frame.raw_command.kind == "move"
+    assert frame.command.kind == "move"
+    assert frame.raw_command_generated_at_ms == pytest.approx(2.0)
+    assert frame.safe_command_generated_at_ms == pytest.approx(5.0)
+    assert frame.g1_response_at_ms == pytest.approx(8.0)
+    assert frame.total_latency_ms == pytest.approx(6.0)
+    assert frame.safe_command_generated_at_ms >= frame.raw_command_generated_at_ms
+
+
+def test_radar_timeout_stop_preserves_raw_command_in_log_row() -> None:
+    bridge = FakeBridge()
+    runtime = AORadarRuntime(
+        config=config(),
+        alx_source=FakeALXSource(
+            FakeSnapshot(timestamp=99.990),
+            wristband_state=FakeWristbandState(enabled=True, updated_at=99.9),
+        ),
+        pipeline=FakePipeline(
+            command=MotionCommand(kind="move", vx=0.2, vy=0.0, omega=0.0, reason="follow")
+        ),
+        radar_manager=FakeRadarManager(),
+        cloud_source=FakeCloudSource(PointCloudFrame(timestamp=99.0, points=[])),
+        radar_pipeline=FakeRadarPipeline(),
+        planner=FakePlanner(),
+        bridge=bridge,
+        clock=lambda: 100.0,
+    )
+
+    runtime.tick()
+
+    row = runtime.last_frame.to_log_row()
+    assert row.raw_command_kind == "move"
+    assert row.raw_command_reason == "follow"
+    assert row.safe_command_kind == "stop"
+    assert row.safe_command_reason == "radar_timeout"

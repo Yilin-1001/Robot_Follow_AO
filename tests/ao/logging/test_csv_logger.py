@@ -26,6 +26,10 @@ def test_csv_logger_writes_required_latency_fields(tmp_path) -> None:
             raw_azimuth_deg=31.0,
             filtered_azimuth_deg=28.5,
             g1_sent_omega=-0.3,
+            distance_m=1.25,
+            tag_status=3,
+            robot_yaw_deg=42.5,
+            robot_yaw_rate_rps=-0.27,
         )
     )
     logger.close()
@@ -34,6 +38,8 @@ def test_csv_logger_writes_required_latency_fields(tmp_path) -> None:
 
     assert "alx_age_ms,command_age_ms,cloud_age_ms" in text
     assert "raw_azimuth_deg,filtered_azimuth_deg,g1_sent_omega" in text
+    assert "distance_m,tag_status,robot_yaw_deg,robot_yaw_rate_rps" in text
+    assert "1.25,3,42.5,-0.27" in text
     assert "front_blocked" in text
 
 

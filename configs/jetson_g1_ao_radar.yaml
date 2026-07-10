@@ -39,7 +39,7 @@ ao_radar:
   # G1 实际输出限幅；即使 follow 输出更大，也会在此被截断。
   g1:
     max_vx: 3.0
-    max_omega: 2.0
+    max_omega: 3.0
     yaw_sign: 1
     sdk_timeout_s: 10.0
     sdk_timeout_code: 3104
@@ -53,7 +53,7 @@ ao_radar:
     stop_timeout_s: 3.0
     ready_timeout_s: 10.0
   latency:
-    ao_output_loop_hz: 20.0
+    ao_output_loop_hz: 40.0
     max_command_age_s: 0.2
     max_cloud_age_s: 0.5
     max_ao_process_ms: 20.0

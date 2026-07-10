@@ -15,6 +15,7 @@ kept on the fake only so it stays a faithful stand-in for the real SDK; a
 dedicated test locks the contract that the bridge never invokes them.
 """
 
+import math
 import subprocess
 import sys
 import textwrap
@@ -113,6 +114,30 @@ class FakeLocoClient:
         return None
 
 
+class FakeStateSubscriber:
+    def __init__(self):
+        self.callback = None
+        self.queue_depth = None
+
+    def Init(self, callback, queue_depth):
+        self.callback = callback
+        self.queue_depth = queue_depth
+
+    def emit(self, message):
+        self.callback(message)
+
+
+class FakeIMUState:
+    def __init__(self, *, yaw_rad: float, yaw_rate_rps: float):
+        self.rpy = [0.0, 0.0, yaw_rad]
+        self.gyroscope = [0.0, 0.0, yaw_rate_rps]
+
+
+class FakeLowState:
+    def __init__(self, *, yaw_rad: float, yaw_rate_rps: float):
+        self.imu_state = FakeIMUState(yaw_rad=yaw_rad, yaw_rate_rps=yaw_rate_rps)
+
+
 # ---------------------------------------------------------------------------
 # init()
 # ---------------------------------------------------------------------------
@@ -125,6 +150,24 @@ def test_fake_client_init():
     assert bridge.state == BridgeState.INITIALIZED
     assert fake.init_called
     assert fake.timeout == pytest.approx(10.0)
+
+
+def test_low_state_updates_actual_yaw_diagnostics():
+    fake = FakeLocoClient()
+    subscriber = FakeStateSubscriber()
+    bridge = G1MotionBridge(
+        "eth0",
+        fake_client=fake,
+        fake_state_subscriber=subscriber,
+    )
+
+    bridge.init()
+    subscriber.emit(FakeLowState(yaw_rad=math.pi / 2, yaw_rate_rps=-0.4))
+
+    assert subscriber.queue_depth == 10
+    assert bridge.attitude_state is not None
+    assert bridge.attitude_state.yaw_deg == pytest.approx(90.0)
+    assert bridge.attitude_state.yaw_rate_rps == pytest.approx(-0.4)
 
 
 def test_init_failure_raises_fatal_error():

@@ -34,6 +34,7 @@ class MockMotionBridge:
     def __init__(self) -> None:
         self.commands: list[MotionCommand] = []
         self.last_sent_omega: float | None = None
+        self.attitude_state = None
 
     def init(self) -> None:
         print("[AO_OUTPUT] mode=mock initialized", flush=True)
@@ -257,6 +258,19 @@ def _maybe_print_summary(
         "-" if frame.filtered_azimuth_deg is None else f"{frame.filtered_azimuth_deg:.1f}"
     )
     g1_omega = "-" if frame.g1_sent_omega is None else f"{frame.g1_sent_omega:.3f}"
+    distance = "-" if frame.distance_m is None else f"{frame.distance_m:.3f}"
+    tag_status = "-" if frame.tag_status is None else str(frame.tag_status)
+    robot_yaw = "-" if frame.robot_yaw_deg is None else f"{frame.robot_yaw_deg:.2f}"
+    robot_yaw_rate = (
+        "-" if frame.robot_yaw_rate_rps is None else f"{frame.robot_yaw_rate_rps:.3f}"
+    )
+
+    # 新增：延迟追踪信息
+    raw_time = "-" if frame.raw_command_generated_at_ms is None else f"{frame.raw_command_generated_at_ms:.1f}"
+    safe_time = "-" if frame.safe_command_generated_at_ms is None else f"{frame.safe_command_generated_at_ms:.1f}"
+    g1_time = "-" if frame.g1_response_at_ms is None else f"{frame.g1_response_at_ms:.1f}"
+    total_lat = "-" if frame.total_latency_ms is None else f"{frame.total_latency_ms:.1f}"
+
     print(
         "[AO_FRAME] "
         f"raw={raw_summary} "
@@ -267,7 +281,10 @@ def _maybe_print_summary(
         f"cmd_age_ms={frame.command_age_ms:.0f} ao_ms={frame.ao_process_ms:.1f} "
         f"dispatch_ms={frame.g1_dispatch_ms:.1f} "
         f"raw_azimuth_deg={raw_azimuth} filtered_azimuth_deg={filtered_azimuth} "
-        f"g1_sent_omega={g1_omega}",
+        f"distance_m={distance} tag_status={tag_status} "
+        f"g1_sent_omega={g1_omega} robot_yaw_deg={robot_yaw} "
+        f"robot_yaw_rate_rps={robot_yaw_rate} "
+        f"latency: raw@{raw_time}ms safe@{safe_time}ms g1@{g1_time}ms total={total_lat}ms",
         flush=True,
     )
     return now

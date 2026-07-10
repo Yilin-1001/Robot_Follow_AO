@@ -24,6 +24,14 @@ class AORadarLogRow:
     raw_azimuth_deg: float | None = None
     filtered_azimuth_deg: float | None = None
     g1_sent_omega: float | None = None
+    distance_m: float | None = None
+    tag_status: int | None = None
+    robot_yaw_deg: float | None = None
+    robot_yaw_rate_rps: float | None = None
+    raw_command_generated_at_ms: float | None = None
+    safe_command_generated_at_ms: float | None = None
+    g1_response_at_ms: float | None = None
+    total_latency_ms: float | None = None
 
 
 class AORadarCSVLogger:
