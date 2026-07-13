@@ -28,8 +28,6 @@ def test_csv_logger_writes_required_40hz_evidence_fields(tmp_path) -> None:
             g1_sent_omega=-0.3,
             distance_m=1.25,
             tag_status=3,
-            robot_yaw_deg=42.5,
-            robot_yaw_rate_rps=-0.27,
             raw_command_generated_at_ms=2.0,
             safe_command_generated_at_ms=5.0,
             g1_response_at_ms=8.0,

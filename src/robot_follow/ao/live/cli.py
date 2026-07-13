@@ -34,7 +34,6 @@ class MockMotionBridge:
     def __init__(self) -> None:
         self.commands: list[MotionCommand] = []
         self.last_sent_omega: float | None = None
-        self.attitude_state = None
 
     def init(self) -> None:
         print("[AO_OUTPUT] mode=mock initialized", flush=True)
@@ -48,6 +47,25 @@ class MockMotionBridge:
 
     def close(self) -> None:
         print("[AO_OUTPUT] mode=mock closed", flush=True)
+
+
+class WristbandStatusPrinter:
+    """Render wristband state transitions from the AO main thread.
+
+    The serial reader only updates state, so a reader thread cannot keep
+    writing to the terminal while the main thread is blocked or shutting down.
+    """
+
+    def __init__(self) -> None:
+        self._last_enabled: bool | None = None
+
+    def emit_if_changed(self, source) -> None:
+        state = source.wristband_state()
+        enabled = getattr(state, "enabled", None)
+        if enabled is None or enabled == self._last_enabled:
+            return
+        self._last_enabled = enabled
+        print(f"[WRISTBAND] {'ON' if enabled else 'OFF'}", flush=True)
 
 
 def build_runtime_from_config(config_paths: Path | list[Path]) -> AORadarRuntime:
@@ -177,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     runtime = build_runtime_from_config(config_paths)
     logger = _build_logger(runtime.config)
     last_summary_at: float | None = None
+    wristband_status_printer = WristbandStatusPrinter()
     try:
         runtime.alx_source.start()
         runtime.cloud_source.start()
@@ -189,6 +208,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         while True:
             started = timing.mark_tick_start()
+            wristband_status_printer.emit_if_changed(runtime.alx_source)
             runtime.tick()
             if logger is not None and runtime.last_frame is not None:
                 logger.write(runtime.last_frame.to_log_row())
@@ -260,11 +280,6 @@ def _maybe_print_summary(
     g1_omega = "-" if frame.g1_sent_omega is None else f"{frame.g1_sent_omega:.3f}"
     distance = "-" if frame.distance_m is None else f"{frame.distance_m:.3f}"
     tag_status = "-" if frame.tag_status is None else str(frame.tag_status)
-    robot_yaw = "-" if frame.robot_yaw_deg is None else f"{frame.robot_yaw_deg:.2f}"
-    robot_yaw_rate = (
-        "-" if frame.robot_yaw_rate_rps is None else f"{frame.robot_yaw_rate_rps:.3f}"
-    )
-
     # 新增：延迟追踪信息
     raw_time = "-" if frame.raw_command_generated_at_ms is None else f"{frame.raw_command_generated_at_ms:.1f}"
     safe_time = "-" if frame.safe_command_generated_at_ms is None else f"{frame.safe_command_generated_at_ms:.1f}"
@@ -282,8 +297,7 @@ def _maybe_print_summary(
         f"dispatch_ms={frame.g1_dispatch_ms:.1f} "
         f"raw_azimuth_deg={raw_azimuth} filtered_azimuth_deg={filtered_azimuth} "
         f"distance_m={distance} tag_status={tag_status} "
-        f"g1_sent_omega={g1_omega} robot_yaw_deg={robot_yaw} "
-        f"robot_yaw_rate_rps={robot_yaw_rate} "
+        f"g1_sent_omega={g1_omega} "
         f"latency: raw@{raw_time}ms safe@{safe_time}ms g1@{g1_time}ms total={total_lat}ms",
         flush=True,
     )

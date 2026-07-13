@@ -10,6 +10,10 @@ POSITION_FRAME = bytes.fromhex(
     "FF A8 00 25 12 34 00 0C BE 00 00 00 40"
 )
 
+OFF_FRAME = bytes.fromhex(
+    "FF FF FF FF 00 10 0A 6B 20 02 01 02 00 00 10 AA"
+)
+
 
 def test_position_frame_with_wristband_on_signature_is_not_dropped(capsys):
     reader = ALXG100SerialReader(port="unused")
@@ -26,24 +30,33 @@ def test_position_frame_with_wristband_on_signature_is_not_dropped(capsys):
     assert sample.azimuth_deg == -88
     assert sample.elevation_deg == 37
     assert sample.tag_status == 0x1234
-    assert "[WRISTBAND] ON" in capsys.readouterr().out
+    assert reader.wristband_state().enabled is True
+    assert capsys.readouterr().out == ""
 
 
 def test_wristband_off_frame_is_still_dropped(capsys):
     reader = ALXG100SerialReader(port="unused")
-    reader._buffer.extend(
-        bytes.fromhex(
-            "FF FF FF FF 00 10 0A 6B 20 02 01 02 00 00 10 AA"
-        )
-    )
+    reader._buffer.extend(OFF_FRAME)
 
     sample = reader._try_pop_sample()
 
     assert sample is None
-    assert "[WRISTBAND] OFF" in capsys.readouterr().out
+    assert reader.wristband_state().enabled is False
+    assert capsys.readouterr().out == ""
 
 
-def test_repeated_position_frames_do_not_spam_wristband_on(capsys):
+def test_wristband_frames_update_state_without_writing_stdout(capsys):
+    reader = ALXG100SerialReader(port="unused")
+    reader._buffer.extend(POSITION_FRAME)
+
+    assert isinstance(reader._try_pop_sample(), PositionSample)
+    reader._buffer.extend(OFF_FRAME)
+    assert reader._try_pop_sample() is None
+    assert reader.wristband_state().enabled is False
+    assert capsys.readouterr().out == ""
+
+
+def test_repeated_position_frames_do_not_write_stdout(capsys):
     reader = ALXG100SerialReader(port="unused")
     reader._buffer.extend(POSITION_FRAME + POSITION_FRAME)
 
@@ -53,22 +66,20 @@ def test_repeated_position_frames_do_not_spam_wristband_on(capsys):
     output = capsys.readouterr().out
     assert isinstance(first, PositionSample)
     assert isinstance(second, PositionSample)
-    assert output.count("[WRISTBAND] ON") == 1
+    assert reader.wristband_state().enabled is True
+    assert output == ""
 
 
 def test_wristband_off_frame_is_prioritized_over_position_backlog(capsys):
-    off_frame = bytes.fromhex(
-        "FF FF FF FF 00 10 0A 6B 20 02 01 02 00 00 10 AA"
-    )
     reader = ALXG100SerialReader(port="unused")
-    reader._buffer.extend(POSITION_FRAME + off_frame)
+    reader._buffer.extend(POSITION_FRAME + OFF_FRAME)
 
     sample = reader._try_pop_sample()
 
     output = capsys.readouterr().out
     assert sample is None
-    assert "[WRISTBAND] OFF" in output
-    assert "[WRISTBAND] ON" not in output
+    assert reader.wristband_state().enabled is False
+    assert output == ""
     assert reader._buffer == bytearray()
 
 
@@ -88,7 +99,7 @@ def test_serial_read_timeout_does_not_emit_wristband_off(capsys):
     sample = next(reader.read_samples())
 
     assert isinstance(sample, PositionSample)
-    assert "[WRISTBAND] OFF" not in capsys.readouterr().out
+    assert capsys.readouterr().out == ""
 
 
 def test_wristband_state_starts_unknown() -> None:

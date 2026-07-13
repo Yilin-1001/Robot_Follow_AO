@@ -106,7 +106,6 @@ class FakeBridge:
         self.commands = []
         self.ticks = []
         self.last_sent_omega = None
-        self.attitude_state = None
 
     def dispatch(self, command: MotionCommand) -> None:
         self.commands.append(command)
@@ -156,11 +155,6 @@ def test_fresh_position_starts_radar_and_dispatches_safe_command() -> None:
 
 def test_frame_logs_raw_filtered_and_output_azimuth_diagnostics() -> None:
     bridge = FakeBridge()
-    bridge.attitude_state = type(
-        "AttitudeState",
-        (),
-        {"yaw_deg": 42.5, "yaw_rate_rps": -0.27},
-    )()
     filtered = FilteredTarget(
         distance_m=1.2,
         azimuth_deg=18.5,
@@ -199,16 +193,12 @@ def test_frame_logs_raw_filtered_and_output_azimuth_diagnostics() -> None:
     assert runtime.last_frame.g1_sent_omega == pytest.approx(0.25)
     assert runtime.last_frame.distance_m == pytest.approx(1.25)
     assert runtime.last_frame.tag_status == 3
-    assert runtime.last_frame.robot_yaw_deg == pytest.approx(42.5)
-    assert runtime.last_frame.robot_yaw_rate_rps == pytest.approx(-0.27)
     row = runtime.last_frame.to_log_row()
     assert row.raw_azimuth_deg == pytest.approx(30.0)
     assert row.filtered_azimuth_deg == pytest.approx(18.5)
     assert row.g1_sent_omega == pytest.approx(0.25)
     assert row.distance_m == pytest.approx(1.25)
     assert row.tag_status == 3
-    assert row.robot_yaw_deg == pytest.approx(42.5)
-    assert row.robot_yaw_rate_rps == pytest.approx(-0.27)
 
 
 def test_stale_position_stops_g1_and_does_not_start_radar() -> None:

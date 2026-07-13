@@ -15,7 +15,6 @@ kept on the fake only so it stays a faithful stand-in for the real SDK; a
 dedicated test locks the contract that the bridge never invokes them.
 """
 
-import math
 import subprocess
 import sys
 import textwrap
@@ -114,30 +113,6 @@ class FakeLocoClient:
         return None
 
 
-class FakeStateSubscriber:
-    def __init__(self):
-        self.callback = None
-        self.queue_depth = None
-
-    def Init(self, callback, queue_depth):
-        self.callback = callback
-        self.queue_depth = queue_depth
-
-    def emit(self, message):
-        self.callback(message)
-
-
-class FakeIMUState:
-    def __init__(self, *, yaw_rad: float, yaw_rate_rps: float):
-        self.rpy = [0.0, 0.0, yaw_rad]
-        self.gyroscope = [0.0, 0.0, yaw_rate_rps]
-
-
-class FakeLowState:
-    def __init__(self, *, yaw_rad: float, yaw_rate_rps: float):
-        self.imu_state = FakeIMUState(yaw_rad=yaw_rad, yaw_rate_rps=yaw_rate_rps)
-
-
 # ---------------------------------------------------------------------------
 # init()
 # ---------------------------------------------------------------------------
@@ -152,22 +127,11 @@ def test_fake_client_init():
     assert fake.timeout == pytest.approx(10.0)
 
 
-def test_low_state_updates_actual_yaw_diagnostics():
-    fake = FakeLocoClient()
-    subscriber = FakeStateSubscriber()
-    bridge = G1MotionBridge(
-        "eth0",
-        fake_client=fake,
-        fake_state_subscriber=subscriber,
-    )
+def test_bridge_does_not_expose_low_state_subscription():
+    """Motion output must not create or expose a G1 LowState telemetry path."""
+    bridge = G1MotionBridge("eth0", fake_client=FakeLocoClient())
 
-    bridge.init()
-    subscriber.emit(FakeLowState(yaw_rad=math.pi / 2, yaw_rate_rps=-0.4))
-
-    assert subscriber.queue_depth == 10
-    assert bridge.attitude_state is not None
-    assert bridge.attitude_state.yaw_deg == pytest.approx(90.0)
-    assert bridge.attitude_state.yaw_rate_rps == pytest.approx(-0.4)
+    assert not hasattr(bridge, "attitude_state")
 
 
 def test_init_failure_raises_fatal_error():
@@ -519,6 +483,74 @@ def test_close_is_best_effort_when_stop_fails():
     bridge.close()  # stop() inside returns code 1; close must still complete
     assert bridge.state == BridgeState.CREATED
     bridge.close()  # second close: client is None -> stop returns early, no raise
+
+
+def test_close_skips_blocking_stop_when_already_stopped():
+    """When the bridge is already STOPPED the robot is already halted; close()
+    must not issue another SetVelocity that could only block or fail."""
+    fake = FakeLocoClient()
+    bridge = G1MotionBridge("eth0", fake_client=fake)
+    bridge.init()
+    bridge.move(_move())
+    bridge.stop("safety")  # state -> STOPPED
+    calls_before = len(fake.set_velocity_calls)
+    bridge.close()
+    assert len(fake.set_velocity_calls) == calls_before  # no new dispatch
+    assert bridge.state == BridgeState.CREATED
+
+
+def test_close_skips_blocking_stop_in_sdk_timeout():
+    """A closing stop() in SDK_TIMEOUT would block up to sdk_timeout_s on an
+    unreachable G1 and return 3104 - skip it. The degraded retries already
+    command zero velocity, so there is nothing new to communicate."""
+    fake = FakeLocoClient(persistent_timeout=True)
+    cfg = G1BridgeConfig(max_consecutive_sdk_timeouts=3)
+    bridge = G1MotionBridge("eth0", config=cfg, fake_client=fake)
+    bridge.init()
+    bridge.stop("first")  # 3104 -> state -> SDK_TIMEOUT
+    assert bridge.state == BridgeState.SDK_TIMEOUT
+    calls_before = len(fake.set_velocity_calls)
+    bridge.close()
+    assert len(fake.set_velocity_calls) == calls_before  # no blocking retry
+    assert bridge.state == BridgeState.CREATED
+
+
+def test_close_skips_blocking_stop_in_error():
+    """Once escalated to ERROR the SDK is known-broken; a closing stop can only
+    block and fail. Skip it so shutdown is prompt and quiet."""
+    fake = FakeLocoClient(persistent_timeout=True)
+    t = [0.0]
+    cfg = G1BridgeConfig(
+        sdk_timeout_retry_interval_s=1.0,
+        max_consecutive_sdk_timeouts=3,
+    )
+    bridge = G1MotionBridge("eth0", config=cfg, fake_client=fake, clock=lambda: t[0])
+    bridge.init()
+    bridge.stop("first")
+    t[0] = 1.0
+    bridge.stop("second")
+    t[0] = 2.0
+    bridge.stop("third")  # 3rd consecutive 3104 -> ERROR
+    assert bridge.state == BridgeState.ERROR
+    calls_before = len(fake.set_velocity_calls)
+    bridge.close()
+    assert len(fake.set_velocity_calls) == calls_before
+    assert bridge.state == BridgeState.CREATED
+
+
+def test_close_still_stops_when_active():
+    """When the last command was a successful move (ACTIVE), close() must still
+    issue a stop - the robot may still be in motion and a responsive G1 returns
+    in milliseconds, so the stop is cheap and necessary."""
+    fake = FakeLocoClient()
+    bridge = G1MotionBridge("eth0", fake_client=fake)
+    bridge.init()
+    bridge.move(_move())  # state -> ACTIVE
+    calls_before = len(fake.set_velocity_calls)
+    bridge.close()
+    assert len(fake.set_velocity_calls) == calls_before + 1
+    assert fake.set_velocity_calls[-1] == _ZERO_VEL_CALL
+    assert bridge.state == BridgeState.CREATED
 
 
 # ---------------------------------------------------------------------------

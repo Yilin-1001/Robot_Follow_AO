@@ -19,7 +19,7 @@ from pathlib import Path
 from robot_follow.ao.app.config import AppConfig
 from robot_follow.ao.avoidance.planner import StatefulAvoidancePlanner
 from robot_follow.ao.config import load_ao_radar_config
-from robot_follow.ao.live.cli import build_runtime_from_config
+from robot_follow.ao.live.cli import WristbandStatusPrinter, build_runtime_from_config
 from robot_follow.ao.live.loop_timing import LoopTiming, LoopTimingConfig
 from robot_follow.ao.web.frames import ConstantCommandSource, build_visualization_payload
 from robot_follow.ao.web.server import VisualizerHub, create_app
@@ -197,6 +197,7 @@ def main(argv=None) -> int:
 
     last_web_update_at: float | None = None
     web_period_s = 1.0 / args.web_hz
+    wristband_status_printer = WristbandStatusPrinter()
 
     try:
         timing = LoopTiming(
@@ -206,6 +207,7 @@ def main(argv=None) -> int:
         )
         while True:
             started = timing.mark_tick_start()
+            wristband_status_printer.emit_if_changed(runtime.alx_source)
 
             # Run runtime tick
             runtime.tick()

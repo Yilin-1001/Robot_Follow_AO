@@ -34,7 +34,6 @@ from __future__ import annotations
 import logging
 import math
 import time
-from dataclasses import dataclass
 from typing import Callable, Union
 
 from robot_follow.core.types import MotionCommand
@@ -50,15 +49,6 @@ logger = logging.getLogger(__name__)
 # before the on-board FSM intervenes; the software watchdog (tick +
 # command_timeout_s) handles the normal refresh case.
 _MOVE_DURATION_S = 1.0
-_LOW_STATE_TOPIC = "rt/lowstate"
-
-
-@dataclass(frozen=True)
-class G1AttitudeState:
-    """Latest pelvis IMU yaw diagnostics received from G1 LowState."""
-
-    yaw_deg: float
-    yaw_rate_rps: float
 
 
 class G1MotionBridge:
@@ -99,17 +89,13 @@ class G1MotionBridge:
         network_interface: str,
         config: G1BridgeConfig | None = None,
         fake_client: object | None = None,
-        fake_state_subscriber: object | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self._network_interface = network_interface
         self._config = config or G1BridgeConfig()
         self._fake_client = fake_client
-        self._fake_state_subscriber = fake_state_subscriber
         self._clock = clock  # injectable clock (default monotonic, matches the loop)
         self._client: object | None = None
-        self._state_subscriber: object | None = None
-        self._attitude_state: G1AttitudeState | None = None
         self._state = BridgeState.CREATED
         self._sdk_error = False
         self._consecutive_sdk_timeouts = 0
@@ -146,11 +132,6 @@ class G1MotionBridge:
         """
         return self._last_sent_omega
 
-    @property
-    def attitude_state(self) -> G1AttitudeState | None:
-        """Latest actual yaw and yaw rate reported by the G1 pelvis IMU."""
-        return self._attitude_state
-
     def init(self) -> None:
         """Initialize DDS and LocoClient.
 
@@ -181,8 +162,6 @@ class G1MotionBridge:
                 ChannelFactoryInitialize(0, self._network_interface)
                 self._client = LocoClient()
                 logger.info(f"G1MotionBridge initialized on {self._network_interface}")
-
-            self._init_state_subscriber()
 
             # Common to fake and real paths: SetTimeout + Init. On the real SDK
             # Init() returns None (local API registration only), so a failure
@@ -319,56 +298,33 @@ class G1MotionBridge:
             self.stop("watchdog_timeout")
 
     def close(self) -> None:
-        """Clean shutdown. Best-effort: stop failure does not prevent cleanup."""
-        try:
-            self.stop("close")
-        except Exception as e:
-            logger.warning(f"G1 close: best-effort stop failed: {e}")
+        """Clean shutdown. Best-effort: stop failure does not prevent cleanup.
+
+        When the bridge is already in a state where another ``SetVelocity``
+        cannot help - ``STOPPED`` (already halted), ``SDK_TIMEOUT`` /
+        ``ERROR`` (G1 known-unreachable), or ``CREATED`` (never initialized) -
+        the closing ``stop()`` is skipped. On an unreachable G1 that stop would
+        otherwise block for up to ``sdk_timeout_s`` (e.g. ~10 s of 3104
+        timeouts) only to fail again, so skipping it keeps shutdown prompt and
+        quiet instead of re-printing "G1 stop timed out with code 3104" while
+        the user waits. This is physically safe: the on-board FSM plus the 1 s
+        velocity duration already bound any residual motion. ``ACTIVE`` (and
+        ``INITIALIZED``) still issue the stop, because a prior move may have
+        left the robot in motion and a responsive G1 returns in milliseconds.
+        """
+        if self._state not in (
+            BridgeState.STOPPED,
+            BridgeState.SDK_TIMEOUT,
+            BridgeState.ERROR,
+            BridgeState.CREATED,
+        ):
+            try:
+                self.stop("close")
+            except Exception as e:
+                logger.warning(f"G1 close: best-effort stop failed: {e}")
         self._client = None
-        self._state_subscriber = None
-        self._attitude_state = None
         self._state = BridgeState.CREATED
         logger.info("G1MotionBridge closed")
-
-    def _init_state_subscriber(self) -> None:
-        """Start a best-effort G1 LowState subscription for diagnostics.
-
-        Motion output remains available when the diagnostic topic or message
-        type is unavailable; in that case the CSV yaw fields stay empty.
-        """
-        try:
-            if self._fake_state_subscriber is not None:
-                subscriber = self._fake_state_subscriber
-            elif self._fake_client is not None:
-                return
-            else:
-                from unitree_sdk2py.core.channel import ChannelSubscriber
-                from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
-
-                subscriber = ChannelSubscriber(_LOW_STATE_TOPIC, LowState_)
-            subscriber.Init(self._on_low_state, 10)
-            self._state_subscriber = subscriber
-            logger.info("G1 LowState diagnostics subscribed on %s", _LOW_STATE_TOPIC)
-        except Exception as exc:
-            self._state_subscriber = None
-            logger.warning("G1 LowState diagnostics unavailable: %s", exc)
-
-    def _on_low_state(self, message: object) -> None:
-        """Update actual yaw diagnostics from a Unitree ``LowState_`` sample."""
-        try:
-            imu_state = _read_member(message, "imu_state")
-            rpy = _read_member(imu_state, "rpy")
-            gyroscope = _read_member(imu_state, "gyroscope")
-            yaw_rad = float(rpy[2])
-            yaw_rate_rps = float(gyroscope[2])
-            if not (_is_finite(yaw_rad) and _is_finite(yaw_rate_rps)):
-                return
-            self._attitude_state = G1AttitudeState(
-                yaw_deg=math.degrees(yaw_rad),
-                yaw_rate_rps=yaw_rate_rps,
-            )
-        except (AttributeError, IndexError, TypeError, ValueError):
-            logger.debug("Ignoring malformed G1 LowState IMU sample", exc_info=True)
 
     def _record_error(self, message: str) -> None:
         """Record an SDK or validation error without raising.
@@ -460,12 +416,6 @@ class G1MotionBridge:
 def _clamp(value: float, lo: float, hi: float) -> float:
     """Clamp value to [lo, hi] range."""
     return max(lo, min(hi, value))
-
-
-def _read_member(value: object, name: str) -> object:
-    """Read either an IDL Python attribute or a generated callable accessor."""
-    member = getattr(value, name)
-    return member() if callable(member) else member
 
 
 def _is_finite(value: float) -> bool:

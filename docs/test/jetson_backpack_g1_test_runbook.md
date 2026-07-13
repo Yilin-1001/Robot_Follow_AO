@@ -505,6 +505,19 @@ G1 停止
 日志目录完整生成
 ```
 
+### 9.1 干净关停：避免 `conda run` 包裹长时间运行的进程
+
+长时间运行的真实机器人进程（闭环、AO radar CLI）建议用 `conda activate` + 直接 `python` 启动，而非 `conda run`：
+
+```bash
+conda activate robot-follow
+PYTHONPATH=src python -m robot_follow.run_logger ...   # 或 AO radar CLI
+```
+
+`conda run` 会在前台进程组里套一层 wrapper：Ctrl+C 时 wrapper 先捕获 SIGINT、打印 `CondaError: KeyboardInterrupt` 并退出，shell 提示符提前返回；而子进程 `python` 若正阻塞在 G1 `SetVelocity`（G1 不可达时最长阻塞 `g1.sdk_timeout_s` 秒，返回 3104），`KeyboardInterrupt` 会被推迟到该 C 调用返回，期间终端继续刷 `[WRISTBAND]` / `[AO_FRAME]` / `G1 stop timed out with code 3104`。直接用 `python` 启动让 SIGINT 直达进程，配合较短的 `sdk_timeout_s`，关停更及时安静。
+
+若提示符已回来却仍在刷屏，说明 `python` 子进程被孤儿化但还占用 TTY：`pkill -f robot_follow`（或按 PID）结束即可。
+
 ## 10. 参数调整方法
 
 优先修改：

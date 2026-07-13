@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from robot_follow.ao.live.cli import MockMotionBridge, build_runtime_from_config
+from robot_follow.ao.live.cli import (
+    MockMotionBridge,
+    WristbandStatusPrinter,
+    build_runtime_from_config,
+)
 from robot_follow.ao.live.loop_timing import LoopTimingConfig
 
 
@@ -154,3 +158,28 @@ def test_ao_cli_40hz_period_is_25ms() -> None:
     config = LoopTimingConfig(target_hz=40.0)
 
     assert config.period_s == 0.025
+
+
+def test_wristband_status_printer_prints_each_main_thread_transition_once(capsys) -> None:
+    class State:
+        def __init__(self, enabled) -> None:
+            self.enabled = enabled
+
+    class Source:
+        def __init__(self) -> None:
+            self.enabled = None
+
+        def wristband_state(self):
+            return State(self.enabled)
+
+    source = Source()
+    printer = WristbandStatusPrinter()
+
+    printer.emit_if_changed(source)
+    source.enabled = True
+    printer.emit_if_changed(source)
+    printer.emit_if_changed(source)
+    source.enabled = False
+    printer.emit_if_changed(source)
+
+    assert capsys.readouterr().out == "[WRISTBAND] ON\n[WRISTBAND] OFF\n"

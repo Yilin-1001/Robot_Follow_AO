@@ -32,8 +32,6 @@ class AORadarFrameResult:
     g1_sent_omega: float | None = None
     distance_m: float | None = None
     tag_status: int | None = None
-    robot_yaw_deg: float | None = None
-    robot_yaw_rate_rps: float | None = None
     # 新增：完整延迟追踪时间戳
     raw_command_generated_at_ms: float | None = None  # raw命令生成时刻（相对于tick开始）
     safe_command_generated_at_ms: float | None = None  # safe命令生成时刻（相对于tick开始）
@@ -61,8 +59,6 @@ class AORadarFrameResult:
             g1_sent_omega=self.g1_sent_omega,
             distance_m=self.distance_m,
             tag_status=self.tag_status,
-            robot_yaw_deg=self.robot_yaw_deg,
-            robot_yaw_rate_rps=self.robot_yaw_rate_rps,
             raw_command_generated_at_ms=self.raw_command_generated_at_ms,
             safe_command_generated_at_ms=self.safe_command_generated_at_ms,
             g1_response_at_ms=self.g1_response_at_ms,
@@ -268,8 +264,6 @@ class AORadarRuntime:
             g1_sent_omega=self._g1_sent_omega(),
             distance_m=distance_m,
             tag_status=tag_status,
-            robot_yaw_deg=self._robot_yaw_deg(),
-            robot_yaw_rate_rps=self._robot_yaw_rate_rps(),
             # 新增延迟追踪字段
             raw_command_generated_at_ms=raw_elapsed_ms,
             safe_command_generated_at_ms=safe_elapsed_ms,
@@ -326,8 +320,6 @@ class AORadarRuntime:
             g1_sent_omega=self._g1_sent_omega(),
             distance_m=distance_m,
             tag_status=tag_status,
-            robot_yaw_deg=self._robot_yaw_deg(),
-            robot_yaw_rate_rps=self._robot_yaw_rate_rps(),
             # 新增延迟追踪字段
             raw_command_generated_at_ms=raw_elapsed_ms,
             safe_command_generated_at_ms=None,  # stop命令无safe阶段
@@ -382,15 +374,3 @@ class AORadarRuntime:
         if value is None:
             return None
         return float(value)
-
-    def _robot_yaw_deg(self) -> float | None:
-        state = getattr(self.bridge, "attitude_state", None)
-        if state is None:
-            return None
-        return float(state.yaw_deg)
-
-    def _robot_yaw_rate_rps(self) -> float | None:
-        state = getattr(self.bridge, "attitude_state", None)
-        if state is None:
-            return None
-        return float(state.yaw_rate_rps)
