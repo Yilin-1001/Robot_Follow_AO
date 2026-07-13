@@ -1,6 +1,6 @@
 # Web-Selected LiDAR Human Follow Design
 
-> Status: approved design, pending user review before implementation  
+> Status: revised approved design, pending user review before implementation
 > Date: 2026-07-13  
 > Scope: a new independent `lidar_follow` mode for Unitree G1
 
@@ -24,8 +24,8 @@ target position.
   target source.
 - Enlarged point-cloud perception for human detection and Web selection.
 - 3D clustering and geometric human-candidate filtering.
-- Web selection, explicit start, stop/unlock, visual target status, and
-  target-cluster highlighting.
+- Web control of radar start/stop, target selection, explicit follow start,
+  stop/unlock, visual target status, and target-cluster highlighting.
 - Short-horizon cluster association while the target is visible.
 - Existing FAST-LIO latest-frame source, AO planner, and G1 bridge reuse.
 - Target-aware safety distance plus AO avoidance of all non-target obstacles.
@@ -41,7 +41,9 @@ target position.
 
 `lidar_follow` is selected before launch/configuration. An `alx_follow` run
 continues to use its existing serial source; a `lidar_follow` run must not
-open, read, or depend on the ALX serial device.
+open, read, or depend on the ALX serial device. In a `lidar_follow` run,
+Livox and FAST-LIO are initially off and are started only by the unique Web
+controller's explicit radar-start action.
 
 ## 3. Chosen approach
 
@@ -72,7 +74,7 @@ Web control mailbox ------------------------> TargetLockManager
 human candidates + locked state -----------> HumanTrackAssociator
                                                 -> current target cluster
 current target cluster --------------------> TargetProximityGuard
-current target cluster --------------------> TargetMasker
+current target cluster --------------------> TargetAwareObstacleClassifier
       -> avoidance ROI + non-target points -> existing AO pipeline
 target position + guards + AO result ------> LidarFollowRuntime
                                                 -> existing G1MotionBridge
@@ -87,9 +89,11 @@ it never sends a motion command directly.
 The same body-frame input frame is prepared once, then split into two logical
 uses:
 
-- **Tracking ROI:** a wide region used to detect and maintain the selected
-  human. Initial configurable bounds: `x=0.3..5.0 m`, `y=-2.5..2.5 m`,
-  `z=0.1..2.0 m`.
+- **Tracking ROI:** a cylindrical wide region used to detect and maintain the
+  selected human: radial distance `0.25..5.0 m`, full 360-degree horizontal
+  coverage, and physical height `0.1..2.0 m` above the local ground plane.
+  The latter must be obtained through calibrated frame transforms and ground
+  estimation, not assumed from raw point-cloud `z` values.
 - **Avoidance ROI:** the existing conservative near-field AO region. Its
   bounds must not expand merely because the tracking ROI is larger.
 
@@ -98,7 +102,25 @@ All other point-cloud clusters, including other humans, remain obstacles. A
 separate target-distance guard always evaluates the selected human, so masking
 does not permit the robot to walk into that person.
 
-### 4.2 Runtime states
+### 4.2 Radar lifecycle and runtime states
+
+Radar lifecycle is independent from target-lock state:
+
+| Radar state | Meaning | Permitted target action |
+|---|---|---|
+| `RADAR_OFF` | Livox and FAST-LIO are stopped. | none |
+| `RADAR_STARTING` | Web requested startup; runtime waits for a fresh valid body-frame cloud. | none |
+| `RADAR_READY` | Services are running and a valid cloud is fresh. | select target / start follow |
+| `RADAR_FAULT` | Process startup failed or no valid cloud arrived before the configured timeout. | controller must click Start radar again |
+
+Clicking **Start radar** starts Livox first and FAST-LIO second, then waits for
+the configured readiness timeout. A startup failure or timeout enters
+`RADAR_FAULT`; there is no automatic retry. Clicking **Stop radar** is enabled
+only while target state is `IDLE`; it verifies zero velocity, clears target
+state, stops FAST-LIO and Livox, and returns to `RADAR_OFF`. The controller
+cannot turn radar off while following: it must first use Stop and unlock.
+
+Target-lock state is:
 
 | State | Meaning | Motion output |
 |---|---|---|
@@ -154,22 +176,25 @@ in that control tick. It does not switch to the nearest other person.
 Calculates human-to-robot clearance from the selected cluster's nearest point
 and extents. Initial policy values, all configuration-controlled, are:
 
-- desired follow distance: `1.2 m`;
-- no-forward distance: `0.9 m`;
-- mandatory stop distance: `0.7 m`.
+- desired follow distance: `1.0 m`;
+- mandatory stop distance: `0.8 m`.
 
-It prevents positive forward velocity inside the no-forward distance and
-outputs a stop inside the mandatory-stop distance. Final values must be
-calibrated against the physical G1 body envelope and LiDAR extrinsics before
-walking tests.
+It outputs a stop inside the mandatory-stop distance. Between `0.8 m` and the
+desired `1.0 m` distance, the follow controller may issue a reverse command to
+restore separation, capped by the configured reverse-speed limit. Final
+thresholds must be calibrated against the physical G1 body envelope and LiDAR
+extrinsics before walking tests.
 
-### `TargetMasker`
+### `TargetAwareObstacleClassifier`
 
-Uses the exact point indices of the currently associated target cluster to
-exclude only those points from the non-target AO input. It must not mask an
-expanded radius or neighbouring clusters. If cluster membership, timestamp, or
-association validity is uncertain, it returns an error rather than masking;
-the runtime stops through the target-loss/fault path.
+Reclassifies the exact point indices of the currently associated target cluster
+as **followed human**, rather than as ordinary obstacles. Those points are
+excluded only from AO's ordinary-obstacle avoidance calculation; they are
+always retained by `TargetProximityGuard` for person-to-robot clearance. It
+must not classify an expanded radius or neighbouring clusters as target points.
+If cluster membership, timestamp, or association validity is uncertain, it
+returns an error rather than reclassifying points; the runtime stops through
+the target-loss/fault path.
 
 ### `LidarFollowRuntime`
 
@@ -177,7 +202,9 @@ Owns the 40 Hz latest-only control cycle. It reads the latest point cloud,
 drains Web control events, detects candidates, updates target state, runs the
 target guard and AO, then dispatches at most one current command to the
 existing G1 bridge. It does not queue historical point clouds or motion
-commands.
+commands. It also owns Livox/FAST-LIO process lifecycle: only a `start_radar`
+event from the unique controller may launch the services, and it stops both
+services after `stop_radar` or controller disconnection.
 
 The existing ALX runtime remains separate. Shared lower-level modules such as
 `FastLIOPointCloudSource`, radar preprocessing, AO planning, loop timing, CSV
@@ -197,15 +224,20 @@ Controls:
 
 | Control | Enabled when | Result |
 |---|---|---|
-| Start follow | current state is `CANDIDATE`, radar is fresh, candidate is still valid | sends `start_follow` |
-| Stop and unlock | `CANDIDATE`, `FOLLOWING`, `LOST`, or `FAULT` | sends priority `stop_unlock` |
-| Select target | radar is fresh and a click resolves to a human candidate | sends `select_target(x, y)` |
+| Start radar | controller owns control, radar is `RADAR_OFF` or `RADAR_FAULT` | sends `start_radar` |
+| Stop radar | controller owns control, radar is on, target state is `IDLE` | sends `stop_radar` |
+| Start follow | controller owns control, target state is `CANDIDATE`, radar is `RADAR_READY`, candidate is still valid | sends `start_follow` |
+| Stop and unlock | controller owns control; target state is `CANDIDATE`, `FOLLOWING`, `LOST`, or `FAULT` | sends priority `stop_unlock` |
+| Select target | controller owns control, radar is `RADAR_READY`, and a click resolves to a human candidate | sends `select_target(x, y)` |
 
 The runtime publishes target state, stop reason, selected cluster geometry,
 target clearance, candidate summaries, cloud age, and active AO decision in
-each Web status frame. A Web disconnect does not stop an already-running robot
-by itself; the last explicit state remains until an operator stop, a safety
-event, or a target loss. Browser reconnection restores the most recent status.
+each Web status frame. The first successfully connected WebSocket client becomes
+the unique controller; later clients are read-only observers. The deployment is
+limited to a trusted LAN and has no login/token layer. If the controller
+disconnects, the runtime immediately stops, unlocks the target, stops FAST-LIO
+and Livox, releases radar resources, and relinquishes control ownership.
+The next successfully connected client may become the new controller.
 
 ## 7. Control and safety policy
 
@@ -225,6 +257,7 @@ Safety precedence is strict:
 ```text
 physical E-stop / G1 bridge fault
   > stop/unlock or mode not following
+  > radar lifecycle fault or controller disconnect
   > missing, stale, malformed, or wrong-frame point cloud
   > target lost or ambiguous association
   > target mandatory-stop distance
@@ -232,9 +265,11 @@ physical E-stop / G1 bridge fault
   > normal follow command
 ```
 
-For the first physical run, use only low forward and yaw speeds, disable
-lateral motion, and require an operator with an independent physical stop.
-Recommended initial maximums are `vx=0.2–0.3 m/s` and `|omega|=0.3–0.5 rad/s`.
+Configured speed limits for this mode are maximum forward `vx=1.0 m/s`,
+maximum reverse `vx=-1.0 m/s`, maximum lateral `|vy|=0.5 m/s`, and maximum
+angular `|omega|=1.0 rad/s`. Lateral AO avoidance is permitted. Physical tests
+must begin below these configurable caps and require an operator with an
+independent physical stop.
 The production control configuration must retain the current age budgets:
 newest-only frames, point-cloud timeout, command timeout, AO time budget, G1
 dispatch watchdog, and fail-closed behaviour.
@@ -248,14 +283,19 @@ dispatch watchdog, and fail-closed behaviour.
 - Click-to-cluster resolution, event priority, and every lock-state transition.
 - Association accepts the intended nearby continuation but rejects an ambiguous
   or materially different candidate.
-- Target mask removes only selected-cluster indices; other humans remain AO
-  obstacles.
+- Target-aware obstacle classification reclassifies only selected-cluster
+  indices; other humans remain AO obstacles and the selected human remains in
+  the proximity guard.
 - Target proximity values cap forward motion and force stop at the configured
   boundary.
 - Runtime emits stop for target loss, stale/malformed cloud, AO failure,
   control-loop overrun, and G1 bridge fault.
-- Web protocol and frontend tests prove Start is disabled before candidate
-  selection and Stop/unlock is always available while armed/active.
+- Radar lifecycle tests prove manual start order, no automatic retry, timeout
+  fault, and stop only after follow has been unlocked.
+- Web protocol and frontend tests prove unique-controller ownership, observer
+  read-only rejection, controller-disconnect stop/unlock/radar shutdown, Start
+  disabled before candidate selection, and Stop/unlock availability while
+  armed/active.
 
 ### Recorded-data acceptance
 
@@ -282,14 +322,19 @@ an automatic target switch or a motion command after a target-loss condition.
 ## 9. Configuration and observability
 
 Add a `lidar_follow` configuration section rather than changing ALX defaults.
-It contains mode selection, tracking/avoidance ROI bounds, clustering and human
-geometry thresholds, click radius, association gates, distance thresholds,
-speed limits, and required freshness budgets.
+It contains mode selection, Livox/FAST-LIO launch and readiness settings,
+tracking/avoidance ROI bounds, clustering and human geometry thresholds, click
+radius, association gates, distance thresholds, forward/reverse/lateral/yaw
+speed limits, Web-controller policy, and required freshness budgets. The YAML
+file is loaded only at process startup; runtime Web controls cannot alter or
+reload parameters, and any configuration change requires a stopped-process
+restart.
 
-Per control tick log: lock state, Web event sequence, chosen candidate ID,
-association score/reason, target distance/clearance, target-mask count,
-candidate count, cloud age, AO reason, safe command, and G1 dispatch timing.
-These fields make a target switch, loss, or safety stop diagnosable from a
+Per control tick log: radar state, lock state, controller ownership, Web event
+sequence, chosen candidate ID, association score/reason, target
+distance/clearance, reclassified-point count, candidate count, cloud age, AO
+reason, safe command, and G1 dispatch timing. These fields make a target
+switch, loss, radar lifecycle issue, or safety stop diagnosable from a
 recorded run.
 
 ## 10. Deferred extension
