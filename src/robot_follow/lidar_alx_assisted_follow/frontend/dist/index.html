@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LiDAR + ALX Assisted Follow</title>
+  <script type="module" crossorigin src="./assets/index-CjrIuZ0R.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-DSHY89Ga.css">
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <h1 class="header-title">LiDAR Follow Monitor</h1>
+      <div class="header-status">
+        <span id="role-display" class="role-badge">Connecting...</span>
+      </div>
+    </header>
+
+    <main class="main-content">
+      <section class="canvas-section">
+        <canvas id="lidar-canvas" width="800" height="600"></canvas>
+        <div id="calibration-banner" class="calibration-banner">
+          PROVISIONAL CALIBRATION
+        </div>
+      </section>
+
+      <section class="controls-section">
+        <div class="status-grid">
+          <div class="status-item">
+            <span class="status-label">Lifecycle</span>
+            <span id="lifecycle-state" class="status-value">WRISTBAND_OFF</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Lock State</span>
+            <span id="lock-state" class="status-value">IDLE</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Confidence</span>
+            <span id="confidence-value" class="status-value">0.00</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Stop Reason</span>
+            <span id="stop-reason" class="status-value">None</span>
+          </div>
+        </div>
+
+        <div class="command-display">
+          <div class="command-item">
+            <span class="command-label">vx</span>
+            <span id="dispatched-vx" class="command-value">0.00</span>
+          </div>
+          <div class="command-item">
+            <span class="command-label">vy</span>
+            <span id="dispatched-vy" class="command-value">0.00</span>
+          </div>
+          <div class="command-item">
+            <span class="command-label">ω</span>
+            <span id="dispatched-omega" class="command-value">0.00</span>
+          </div>
+        </div>
+
+        <div class="control-buttons">
+          <button id="start-btn" class="btn btn-start" disabled>Start Follow</button>
+          <button id="stop-btn" class="btn btn-stop" disabled>Stop Follow</button>
+        </div>
+
+        <div id="error-message" class="error-message hidden"></div>
+      </section>
+    </main>
+  </div>
+
+</body>
+</html>
