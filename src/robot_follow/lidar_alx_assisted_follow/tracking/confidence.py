@@ -243,9 +243,9 @@ def check_confidence_state(
 
     if current_state == LockState.FOLLOWING:
         if total < config.unlock:
-            return ("unlock", f"confidence_below_unlock({total:.3f})")
+            return ("unlock", "confidence_low")
         elif total < config.stop:
-            return ("stop", f"confidence_below_stop({total:.3f})")
+            return ("stop", "confidence_low")
 
     if current_state in (LockState.CANDIDATE, LockState.FOLLOWING):
         if not confidence.alx_fresh:

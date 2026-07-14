@@ -27,12 +27,20 @@ class G1BridgeProtocol(Protocol):
         ...
 
 
+class StopLatchProtocol(Protocol):
+    """Minimal live STOP interface used at the final dispatch boundary."""
+
+    def snapshot(self) -> StopSnapshot:
+        ...
+
+
 def dispatch_strategy_or_stop(
     strategy: StrategyResult,
     latch_snapshot: StopSnapshot,
     bridge: G1BridgeProtocol,
     limiter: CommandSlewRateLimiter,
     now_s: Optional[float] = None,
+    latch: Optional[StopLatchProtocol] = None,
 ) -> None:
     """Dispatch strategy result or stop command to G1 bridge.
 
@@ -93,6 +101,18 @@ def dispatch_strategy_or_stop(
     if _is_zero_intent(limited_intent):
         _dispatch_zero_motion(bridge, limiter, now_s=now_s, reason=limited_intent.reason)
         return
+
+    # Re-read the latch immediately before a nonzero bridge call.  A Web or
+    # lifecycle thread may have requested STOP while APF or limiting ran.
+    if latch is not None:
+        live_snapshot = latch.snapshot()
+        if live_snapshot.requested:
+            _dispatch_mandatory_stop(
+                bridge,
+                limiter,
+                reason=live_snapshot.reason or "stop",
+            )
+            return
 
     # Dispatch limited motion
     command = MotionCommand(

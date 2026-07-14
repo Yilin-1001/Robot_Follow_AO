@@ -250,6 +250,11 @@ class StopLatch:
             self._start_after_sequence = start_after_sequence
             self._version += 1
 
+    def bind_control_thread(self, control_thread_id: int) -> None:
+        """Bind latch clearing ownership to the running control thread."""
+        with self._lock:
+            self._control_thread_id = control_thread_id
+
     def clear_soft_recovery(self) -> None:
         """Clear latch for soft-stop auto-recovery.
 
@@ -273,6 +278,13 @@ class StopLatch:
                 raise RuntimeError(
                     "clear_soft_recovery cannot clear a HARD stop; "
                     "use clear_for_start"
+                )
+            if self._kind != StopKind.SOFT or self._reason not in (
+                "confidence_low",
+                "alx_stale",
+            ):
+                raise RuntimeError(
+                    "clear_soft_recovery only accepts confidence_low or alx_stale"
                 )
             self._requested = False
             self._kind = None

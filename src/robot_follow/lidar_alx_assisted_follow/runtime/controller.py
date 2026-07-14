@@ -58,6 +58,7 @@ from robot_follow.lidar_alx_assisted_follow.tracking.target import (
     TargetLockManager,
     TargetLockSnapshot,
 )
+from robot_follow.ao.live.radar_service_manager import RadarServiceManager
 
 
 class ALXReaderProtocol(Protocol):
@@ -93,6 +94,10 @@ class RuntimeState:
 
     # ALX age
     last_alx_age_ms: float = 0.0
+    last_alx_body_xy: Optional[np.ndarray] = None
+
+    # Freshness anchor for watchdog cloud-age checks.
+    last_cloud_received_at_s: Optional[float] = None
 
 
 @dataclass
@@ -116,6 +121,7 @@ class LidarALXAssistedFollowRuntime:
     alx_reader: ALXReaderProtocol
     alx_buffer: ALXSnapshotBuffer
     lifecycle: WristbandLifecycleGuardian
+    radar_services: RadarServiceManager
     target_manager: TargetLockManager
     stop_latch: StopLatch
     event_inbox: ControlEventInbox
@@ -128,6 +134,8 @@ class LidarALXAssistedFollowRuntime:
     _state: RuntimeState = field(default_factory=RuntimeState)
     _last_strategy_time: float = 0.0
     _last_safety_stop_reason: Optional[str] = None
+    _pending_click_xy: Optional[Tuple[float, float]] = None
+    _bridge_initialized: bool = False
     _running: bool = False
     _control_thread: Optional[threading.Thread] = None
 
@@ -138,7 +146,7 @@ class LidarALXAssistedFollowRuntime:
 
         self._running = True
         self._control_thread = threading.Thread(
-            target=self._control_loop,
+            target=self.run_control_loop,
             name="LidarALXControl",
             daemon=True,
         )
@@ -150,6 +158,15 @@ class LidarALXAssistedFollowRuntime:
         if self._control_thread is not None:
             self._control_thread.join(timeout=2.0)
             self._control_thread = None
+
+    def set_alx_reader(self, reader: ALXReaderProtocol) -> None:
+        """Install the live reader before the control loop starts."""
+        self.alx_reader = reader
+
+    def run_control_loop(self) -> None:
+        """Run the control loop in the caller-owned control thread."""
+        self._running = True
+        self._control_loop()
 
     def _control_loop(self) -> None:
         """Main control loop.
@@ -165,6 +182,7 @@ class LidarALXAssistedFollowRuntime:
         6. Run watchdog safety checks
         7. Call bridge.tick(now)
         """
+        self.stop_latch.bind_control_thread(threading.get_ident())
         watchdog_interval_s = 1.0 / self.config.runtime.watchdog_hz
 
         while self._running:
@@ -217,13 +235,10 @@ class LidarALXAssistedFollowRuntime:
             Control event from Web.
         """
         if event.kind == ControlEventKind.SELECT_TARGET:
-            # Select new target
             x = event.payload.get("x")
             y = event.payload.get("y")
             if x is not None and y is not None:
-                # This will be processed during cloud processing
-                # For now, just store the click
-                pass
+                self._pending_click_xy = (float(x), float(y))
 
         elif event.kind == ControlEventKind.START_FOLLOW:
             # Start following
@@ -322,6 +337,7 @@ class LidarALXAssistedFollowRuntime:
         serial_ok = self.alx_reader.is_ok()
 
         # Tick lifecycle
+        previous_state = self.lifecycle.state
         new_state, should_stop_services, transition_reason = self.lifecycle.tick(
             wristband_on=wristband_on,
             tag_id=tag_id,
@@ -330,12 +346,26 @@ class LidarALXAssistedFollowRuntime:
             now=now,
         )
 
+        if (
+            previous_state == LifecycleState.WRISTBAND_OFF
+            and new_state == LifecycleState.STARTING_SENSORS
+        ):
+            self.radar_services.ensure_running()
+
         # Handle lifecycle transitions
         if should_stop_services:
+            self.radar_services.stop()
             # Request stop if needed
             if transition_reason in ("wristband_off_or_serial_error", "ready_timeout", "tag_changed"):
                 self.stop_latch.request(transition_reason, StopKind.HARD)
                 self.target_manager.unlock()
+
+        if new_state == LifecycleState.SENSORS_READY and not self._bridge_initialized:
+            try:
+                self.bridge.init()
+                self._bridge_initialized = True
+            except Exception:
+                self.stop_latch.request("bridge_fault", StopKind.HARD)
 
     def _process_cloud(
         self,
@@ -358,6 +388,7 @@ class LidarALXAssistedFollowRuntime:
         """
         # Mark sequence as processed
         self._state.last_processed_sequence = cloud.sequence
+        self._state.last_cloud_received_at_s = cloud.received_at_s
 
         # Compute cloud age
         cloud_age_s = now - cloud.received_at_s
@@ -376,10 +407,12 @@ class LidarALXAssistedFollowRuntime:
 
         # Check stop latch
         latch_snapshot = self.stop_latch.snapshot()
-        if latch_snapshot.requested:
+        if latch_snapshot.requested and latch_snapshot.kind == StopKind.HARD:
             reason = latch_snapshot.reason or "stop"
             self._log_strategy_zero(cloud, reason, now)
             return
+
+        compute_start = time.monotonic()
 
         # Preprocess cloud
         preprocessed = preprocess_tracking_cloud(
@@ -405,18 +438,43 @@ class LidarALXAssistedFollowRuntime:
                 alx_fresh = alx_age_s < self.config.alx.stale_timeout_s
 
         self._state.last_alx_age_ms = alx_age_ms
+        self._state.last_alx_body_xy = alx_body_xy
 
         # Check ALX staleness
         if not alx_fresh:
             self.stop_latch.request("alx_stale", StopKind.SOFT)
 
-        # Update target tracking
-        observation, lost = self.target_manager.update(preprocessed, now)
+        # A Web click is applied to this fresh cloud, never to an old frame.
+        is_selected_seed = self._pending_click_xy is not None
+        previous_target = self.target_manager.snapshot()
+        if is_selected_seed:
+            observation = self.target_manager.select(
+                preprocessed, self._pending_click_xy, now
+            )
+            self._pending_click_xy = None
+            lost = False
+        else:
+            observation, lost = self.target_manager.update(preprocessed, now)
 
         if lost:
             self.stop_latch.request("target_lost", StopKind.HARD)
 
         self._state.last_observation = observation
+
+        center_displacement: Optional[float] = None
+        frame_interval: Optional[float] = None
+        if (
+            observation is not None
+            and previous_target.center_xy is not None
+            and not is_selected_seed
+        ):
+            center_displacement = float(
+                np.hypot(
+                    observation.center_xy[0] - previous_target.center_xy[0],
+                    observation.center_xy[1] - previous_target.center_xy[1],
+                )
+            )
+            frame_interval = now - previous_target.last_seen_at_s
 
         # Compute confidence
         target_snapshot = self.target_manager.snapshot()
@@ -427,6 +485,9 @@ class LidarALXAssistedFollowRuntime:
             alx_fresh=alx_fresh,
             config=self.config.confidence,
             target_config=self.config.target,
+            is_selected_seed=is_selected_seed,
+            center_displacement=center_displacement,
+            frame_interval=frame_interval,
         )
 
         self._state.last_confidence = confidence
@@ -439,10 +500,21 @@ class LidarALXAssistedFollowRuntime:
         )
 
         if action == "unlock":
-            self.stop_latch.request(reason or "confidence_low", StopKind.HARD)
+            self.stop_latch.request("confidence_low", StopKind.HARD)
             self.target_manager.unlock()
         elif action == "stop":
             self.stop_latch.request(reason or "confidence_low", StopKind.SOFT)
+
+        latch_snapshot = self.stop_latch.snapshot()
+        if (
+            latch_snapshot.requested
+            and latch_snapshot.kind == StopKind.SOFT
+            and latch_snapshot.reason in ("confidence_low", "alx_stale")
+            and observation is not None
+            and alx_fresh
+            and confidence.total >= self.config.confidence.start
+        ):
+            self.stop_latch.clear_soft_recovery()
 
         # Check if we have a valid target
         if observation is None or target_snapshot.center_xy is None:
@@ -462,7 +534,6 @@ class LidarALXAssistedFollowRuntime:
         apf_result = compute_apf(apf_input, self.config.apf, self.config.output_motion)
 
         # Build strategy result
-        compute_start = time.monotonic()
 
         strategy_result = StrategyResult(
             sequence=cloud.sequence,
@@ -485,6 +556,7 @@ class LidarALXAssistedFollowRuntime:
             bridge=self.bridge,
             limiter=self.limiter,
             now_s=now,
+            latch=self.stop_latch,
         )
 
         dispatch_ms = (time.monotonic() - dispatch_start) * 1000.0
@@ -514,6 +586,7 @@ class LidarALXAssistedFollowRuntime:
             sdk_error=None,
             calibration_status="provisional",
         )
+        self._publish_status(cloud, preprocessed)
 
     def _log_strategy_zero(
         self,
@@ -551,6 +624,7 @@ class LidarALXAssistedFollowRuntime:
         )
 
         self._state.last_strategy_result = strategy_result
+        self._publish_status(cloud, None)
 
     def _run_watchdog_checks(self, now: float) -> None:
         """Run watchdog safety checks.
@@ -570,10 +644,17 @@ class LidarALXAssistedFollowRuntime:
             self._dispatch_stop_from_latch(latch_snapshot)
             return
 
-        # Check cloud staleness
-        if self._state.last_processed_sequence > 0:
-            # No new cloud in a while
-            pass
+        # Check cloud staleness after sensors have reached READY.  The watchdog
+        # deliberately performs this safety check without re-running strategy.
+        if (
+            self.lifecycle.state == LifecycleState.SENSORS_READY
+            and self._state.last_cloud_received_at_s is not None
+            and now - self._state.last_cloud_received_at_s
+            > self.config.sensors.max_cloud_age_s
+        ):
+            self.stop_latch.request("cloud_stale", StopKind.HARD)
+            self._dispatch_stop_from_latch(self.stop_latch.snapshot())
+            return
 
         # Check ALX staleness
         if not self._state.last_confidence or not self._state.last_confidence.alx_fresh:
@@ -612,3 +693,82 @@ class LidarALXAssistedFollowRuntime:
             reason=reason,
         )
         self.bridge.dispatch(command)
+
+    def _publish_status(
+        self,
+        cloud: Optional[CloudSnapshot],
+        preprocessed: Optional[PreprocessedCloud],
+    ) -> None:
+        """Replace the bounded Web status snapshot with JSON-safe current state."""
+        target_snapshot = self.target_manager.snapshot()
+        observation = self._state.last_observation
+        strategy = self._state.last_strategy_result
+        confidence = self._state.last_confidence
+        max_points = self.config.web.max_visualization_points
+
+        points = []
+        target_points = []
+        if preprocessed is not None:
+            raw_points = preprocessed.points_xyz
+            stride = max(1, int(np.ceil(len(raw_points) / float(max_points))))
+            points = raw_points[::stride].tolist()
+            if observation is not None:
+                target_points = observation.support_points_xyz.tolist()
+
+        center = target_snapshot.center_xy
+        alx_xy = self._state.last_alx_body_xy
+        self.latest_status.update(
+            {
+                "cloud_sequence": cloud.sequence if cloud is not None else None,
+                "frame_id": cloud.frame_id if cloud is not None else None,
+                "points": points,
+                "target_points": target_points,
+                "target_gate": (
+                    {
+                        "kind": "ellipse",
+                        "center_xy": list(center),
+                        "radial_radius_m": self.config.target.gate_radial_radius_m,
+                        "tangential_radius_m": self.config.target.gate_tangential_radius_m,
+                    }
+                    if center is not None
+                    else None
+                ),
+                "alx": {
+                    "body_xy": alx_xy.tolist() if alx_xy is not None else None,
+                    "age_s": self._state.last_alx_age_ms / 1000.0,
+                    "synchronized": alx_xy is not None,
+                },
+                "lifecycle_state": self.lifecycle.state.value,
+                "lock_state": target_snapshot.state.value,
+                "confidence": (
+                    {
+                        "c_t": confidence.c_t,
+                        "c_g": confidence.c_g,
+                        "c_a": confidence.c_a,
+                        "total": confidence.total,
+                    }
+                    if confidence is not None
+                    else None
+                ),
+                "stop": {
+                    "requested": self.stop_latch.snapshot().requested,
+                    "kind": (
+                        self.stop_latch.snapshot().kind.value
+                        if self.stop_latch.snapshot().kind is not None
+                        else None
+                    ),
+                    "reason": self.stop_latch.snapshot().reason,
+                },
+                "dispatched_command": (
+                    {
+                        "vx": strategy.dispatched.vx,
+                        "vy": strategy.dispatched.vy,
+                        "omega": strategy.dispatched.omega,
+                        "reason": strategy.dispatched.reason,
+                    }
+                    if strategy is not None
+                    else None
+                ),
+                "calibration_status": "provisional",
+            }
+        )

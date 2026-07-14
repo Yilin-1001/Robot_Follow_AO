@@ -163,6 +163,42 @@ class TestStopLatchPriority:
 
         assert bridge.commands[0].reason == "wristband_off"
 
+    def test_live_latch_is_rechecked_immediately_before_nonzero_dispatch(self):
+        """A STOP arriving after strategy evaluation must still win at the bridge."""
+        class LateStopLatch:
+            def snapshot(self):
+                return make_latch_snapshot(
+                    requested=True,
+                    kind=StopKind.HARD,
+                    reason=StopReason.CONTROLLER_DISCONNECTED,
+                )
+
+        limiter = CommandSlewRateLimiter(
+            OutputMotionConfig(
+                accel_vx=10.0,
+                decel_vx=10.0,
+                accel_vy=10.0,
+                decel_vy=10.0,
+                accel_omega=10.0,
+                decel_omega=10.0,
+            )
+        )
+        bridge = FakeBridge()
+
+        limiter.limit(make_intent(sequence=1, vx=0.1), now_s=1.0)
+
+        dispatch_strategy_or_stop(
+            make_strategy(sequence=2, vx=0.1),
+            make_latch_snapshot(requested=False, start_after_sequence=0),
+            bridge,
+            limiter,
+            now_s=1.1,
+            latch=LateStopLatch(),
+        )
+
+        assert bridge.commands[-1].kind == "stop"
+        assert bridge.commands[-1].reason == "controller_disconnected"
+
 
 class TestStrategyStopReason:
     """Test that strategy stop_reason triggers stop."""

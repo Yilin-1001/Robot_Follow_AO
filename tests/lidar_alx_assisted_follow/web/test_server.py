@@ -228,6 +228,28 @@ class TestPrototypeWebHub:
         assert inbox.qsize == 1
 
     @pytest.mark.asyncio
+    async def test_controller_stop_requests_hard_stop_before_enqueueing(self) -> None:
+        """A user Stop must latch immediately, without waiting for control polling."""
+        latch = FakeStopLatch()
+        inbox = ControlEventInbox()
+        hub = PrototypeWebHub(
+            stop_latch=latch,  # type: ignore
+            event_inbox=inbox,
+            latest_status=LatestStatus(),
+            max_clients=8,
+            max_events_per_second=20.0,
+        )
+        await hub.connect("controller")
+
+        result = await hub.handle_client_message(
+            client_id="controller", message_type="stop_follow", payload={}
+        )
+
+        assert result == {"type": "ack"}
+        assert latch.requests == [("user_stop", StopKind.HARD)]
+        assert inbox.pop().kind == ControlEventKind.STOP_FOLLOW
+
+    @pytest.mark.asyncio
     async def test_rate_limiting_enforced(self) -> None:
         """Rate limiting enforced per client."""
         latch = FakeStopLatch()

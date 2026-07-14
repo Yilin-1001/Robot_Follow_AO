@@ -273,6 +273,7 @@ class PrototypeWebHub:
                 return {"type": "ack"}
 
             elif message_type == "stop_follow":
+                self._stop_latch.request("user_stop", StopKind.HARD)
                 self._event_inbox.push(
                     ControlEvent(
                         kind=ControlEventKind.STOP_FOLLOW,

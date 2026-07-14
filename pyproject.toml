@@ -11,6 +11,7 @@ dependencies = [
   "pyserial>=3.5",
   "numpy>=1.23",
   "aiohttp>=3.8",
+  "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +26,7 @@ robot-follow-ao-radar = "robot_follow.ao.live.cli:main"
 robot-follow-ao-radar-web = "robot_follow.ao.live.web_cli:main"
 robot-follow-ao-web = "robot_follow.ao.web.fast_lio_viewer:main"
 robot-follow-ao-web-sim = "robot_follow.ao.web.sim_viewer:main"
+robot-follow-lidar-alx-assisted-follow = "robot_follow.lidar_alx_assisted_follow.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

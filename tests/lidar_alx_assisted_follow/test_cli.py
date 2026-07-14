@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
 
 import pytest
 
@@ -86,6 +87,8 @@ lidar_alx_assisted_follow:
 lidar_alx_assisted_follow:
   output:
     mode: mock
+  logging:
+    enabled: false
 """
         )
 
@@ -95,10 +98,14 @@ lidar_alx_assisted_follow:
             allow_provisional_calibration=False,
         )
 
-        # Should not raise for mock mode
-        # Note: This test will need to mock the runtime construction
-        # until we implement the full CLI
-        pass  # Will implement when CLI exists
+        from robot_follow.lidar_alx_assisted_follow.cli import build_runtime_from_args
+
+        components = build_runtime_from_args(args)
+
+        runtime = components["runtime"]
+        assert runtime.target_manager.config == components["config"].target
+        assert runtime.limiter.config == components["config"].output_motion
+        assert callable(runtime.run_control_loop)
 
     def test_localhost_default_needs_no_lan_confirmation(self, tmp_path):
         """Default localhost binding works without --allow-unauthenticated-lan."""
@@ -117,8 +124,30 @@ lidar_alx_assisted_follow:
             allow_unauthenticated_lan=False,
         )
 
-        # Should not raise for localhost
-        pass  # Will implement when CLI exists
+        from robot_follow.lidar_alx_assisted_follow.cli import build_runtime_from_args
+
+        components = build_runtime_from_args(args)
+        assert components["web_hub"] is not None
+
+    def test_select_event_is_retained_until_the_next_cloud(self, tmp_path):
+        """A Web click is consumed by the control thread's next cloud pass."""
+        config_path = tmp_path / "test_config.yaml"
+        config_path.write_text(
+            "lidar_alx_assisted_follow:\n  logging:\n    enabled: false\n"
+        )
+        components = __import__(
+            "robot_follow.lidar_alx_assisted_follow.cli", fromlist=["build_runtime_from_args"]
+        ).build_runtime_from_args(self._make_args(config=config_path))
+        from robot_follow.lidar_alx_assisted_follow.runtime.state import (
+            ControlEvent,
+            ControlEventKind,
+        )
+
+        components["runtime"]._process_control_event(
+            ControlEvent(ControlEventKind.SELECT_TARGET, {"x": 1.2, "y": -0.3})
+        )
+
+        assert components["runtime"]._pending_click_xy == (1.2, -0.3)
 
     def _make_args(
         self,

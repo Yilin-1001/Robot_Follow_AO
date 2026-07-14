@@ -35,9 +35,12 @@ from robot_follow.lidar_alx_assisted_follow.runtime.csv_log import PrototypeCSVL
 from robot_follow.lidar_alx_assisted_follow.sensors.cloud import SequencedFastLIOPointCloudSource
 from robot_follow.lidar_alx_assisted_follow.sensors.alx import ALXSnapshot, ALXSnapshotBuffer
 from robot_follow.lidar_alx_assisted_follow.sensors.lifecycle import WristbandLifecycleGuardian
+from robot_follow.lidar_alx_assisted_follow.tracking.target import TargetLockManager
+from robot_follow.lidar_alx_assisted_follow.motion.limiter import CommandSlewRateLimiter
 from robot_follow.lidar_alx_assisted_follow.web.server import PrototypeWebHub, create_app
 from robot_follow.real.g1.bridge import G1MotionBridge
 from robot_follow.real.alx_source import ALXLiveSource
+from robot_follow.ao.live.radar_service_manager import RadarServiceManager
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +65,7 @@ class MockMotionBridge:
         """Record command for testing."""
         self.commands.append(command)
 
-    def tick(self, *, now: float) -> None:
+    def tick(self, now: Optional[float] = None) -> None:
         """No-op for mock."""
         pass
 
@@ -86,31 +89,42 @@ class MockMotionBridge:
 class ALXLiveReaderAdapter(ALXReaderProtocol):
     """Adapter from ALXLiveSource to ALXReaderProtocol."""
 
-    def __init__(self, source: ALXLiveSource) -> None:
+    def __init__(self, source: Any) -> None:
         self._source = source
 
     def latest_snapshot(self):
         """Get latest snapshot from live source."""
         from robot_follow.lidar_alx_assisted_follow.sensors.alx import ALXSnapshot
-        state = self._source.wristband_state()
-
-        if not state.enabled:
+        if self._source.wristband_state().enabled is not True:
             return None
 
-        # Convert ALXLiveSource state to ALXSnapshot
+        live_snapshot = self._source.snapshot()
+        if live_snapshot is None:
+            return None
+
         return ALXSnapshot(
-            received_at=time.monotonic(),
-            tag_id=state.tag_id or 0,
-            distance_m=state.distance or 0.0,
-            azimuth_deg=state.azimuth or 0.0,
-            elevation_deg=state.elevation or 0.0,
-            error_code=state.error_code or 0,
-            enabled=state.enabled,
+            received_at=live_snapshot.received_at,
+            tag_id=live_snapshot.tag_id,
+            distance_m=live_snapshot.distance_m,
+            azimuth_deg=live_snapshot.azimuth_deg,
+            elevation_deg=live_snapshot.elevation_deg,
+            error=live_snapshot.error is not None,
         )
 
     def is_ok(self) -> bool:
         """Check if serial communication is healthy."""
-        return self._source.is_ok()
+        snapshot = self._source.snapshot()
+        return snapshot is None or snapshot.error is None
+
+
+class UnavailableALXReader(ALXReaderProtocol):
+    """Safe placeholder used while the composition root is being assembled."""
+
+    def latest_snapshot(self) -> Optional[ALXSnapshot]:
+        return None
+
+    def is_ok(self) -> bool:
+        return True
 
 
 def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
@@ -186,7 +200,7 @@ def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     # Build components
-    components = {}
+    components = {"config": config}
 
     # Stop latch (thread-safe)
     control_thread_id = threading.get_ident()
@@ -201,7 +215,10 @@ def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
     components["latest_status"] = latest_status
 
     # Cloud source
-    cloud_source = SequencedFastLIOPointCloudSource()
+    cloud_source = SequencedFastLIOPointCloudSource(
+        topic=config.sensors.topic,
+        expected_frame_id=config.sensors.expected_frame_id,
+    )
     components["cloud_source"] = cloud_source
 
     # ALX buffer
@@ -213,44 +230,53 @@ def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
     components["alx_buffer"] = alx_buffer
 
     # CSV logger
-    csv_logger: Optional[PrototypeCSVLogger] = None
-    if config.logging.enabled:
-        csv_logger = PrototypeCSVLogger(
-            csv_path=config.logging.csv_path,
-            enabled=True,
-            flush_interval_s=config.logging.flush_interval_s,
-        )
-        components["csv_logger"] = csv_logger
+    csv_logger = PrototypeCSVLogger(
+        csv_path=config.logging.csv_path,
+        enabled=config.logging.enabled,
+        flush_interval_s=config.logging.flush_interval_s,
+    )
+    components["csv_logger"] = csv_logger
 
     # Motion bridge
     if output_mode == "mock":
         bridge = MockMotionBridge()
     else:
         bridge_config = build_g1_bridge_config(config)
-        bridge = G1MotionBridge(bridge_config)
+        bridge = G1MotionBridge(config.g1.network_interface, config=bridge_config)
     components["bridge"] = bridge
 
     # ALX reader (will be created in main, this is just for type hints)
-    components["alx_reader"] = None  # Placeholder, set in main()
+    alx_reader = UnavailableALXReader()
+    components["alx_reader"] = alx_reader
 
     # Lifecycle guardian
     lifecycle = WristbandLifecycleGuardian(
         ready_timeout_s=config.sensors.ready_timeout_s,
     )
     components["lifecycle"] = lifecycle
+    radar_services = RadarServiceManager(build_radar_service_config(config))
+    components["radar_services"] = radar_services
+
+    target_manager = TargetLockManager(config.target)
+    limiter = CommandSlewRateLimiter(config.output_motion)
+    components["target_manager"] = target_manager
+    components["limiter"] = limiter
 
     # Runtime
     runtime = LidarALXAssistedFollowRuntime(
         config=config,
         cloud_source=cloud_source,
+        alx_reader=alx_reader,
         alx_buffer=alx_buffer,
+        lifecycle=lifecycle,
+        radar_services=radar_services,
+        target_manager=target_manager,
         stop_latch=stop_latch,
         event_inbox=event_inbox,
         latest_status=latest_status,
+        limiter=limiter,
         bridge=bridge,
-        lifecycle=lifecycle,
         csv_logger=csv_logger,
-        alx_reader=None,  # Set in main()
     )
     components["runtime"] = runtime
 
@@ -395,7 +421,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             baudrate=config.alx.baudrate,
         )
         alx_reader = ALXLiveReaderAdapter(alx_live_source)
-        runtime._alx_reader = alx_reader
+        runtime.set_alx_reader(alx_reader)
 
         # Shutdown coordination
         shutdown_requested = threading.Event()
@@ -418,9 +444,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.info("Starting ALX serial reader...")
         alx_live_source.start()
 
-        # 2. Initialize bridge
-        logger.info("Initializing motion bridge...")
-        bridge.init()
+        # 2. Start the cloud source.  It imports ROS only in its reader thread.
+        logger.info("Starting FAST-LIO cloud reader...")
+        cloud_source.start()
 
         # 3. Start control thread
         logger.info("Starting control thread...")
@@ -435,7 +461,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         import asyncio
         from aiohttp import web
 
-        app = create_app(web_hub)
+        static_dir = Path(__file__).parent / "frontend" / "dist"
+        app = create_app(web_hub, static_dir=str(static_dir))
         host = args.host if args.host else config.web.host
         port = args.port if args.port else config.web.port
 
@@ -488,6 +515,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         # 2. Join control thread
         logger.info("Waiting for control thread to finish...")
+        runtime.stop()
         control_thread.join(timeout=5.0)
         if control_thread.is_alive():
             logger.warning("Control thread did not shut down cleanly")
@@ -517,7 +545,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         # 8. Close cloud source
         logger.info("Closing cloud source...")
-        # cloud_source.close() would be called here if implemented
+        cloud_source.stop()
 
         logger.info("Shutdown complete")
         return 0
