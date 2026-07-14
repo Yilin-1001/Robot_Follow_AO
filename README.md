@@ -241,3 +241,127 @@ conda run -n robot-follow pytest tests/real/test_alx_source.py
 ## 当前状态
 
 当前版本适合做 ALX dry-run、仿真验证和受控现场低速测试。真实机器人闭环仍应按测试计划逐步启用：先确认 ALX 数据稳定，再确认 G1 单项运动输出，最后再开启闭环跟随。
+
+## LiDAR + ALX Assisted Follow Prototype
+
+### 概述
+
+`lidar_alx_assisted_follow` 是一个独立的跟随原型，使用 Livox MID-360 LiDAR 和 FAST-LIO 进行局部目标选择，并通过 ALX-G100 UWB 腕带提供身份验证和置信度增强。
+
+**核心设计原则：**
+- 云驱动策略：每个点云序列最多处理一次
+- 40 Hz 安全监控：定时唤醒进行安全检查，不从旧点云重新计算策略
+- 最近帧优先：多个点云到达时只处理最新帧
+- 分离线程：Web 线程负责 WebSocket，控制线程负责策略计算和 G1 指令分发
+- 安全优先：任何线程都可以请求 STOP，只有控制线程可以清除
+- 临时校准：当前使用临时校准参数，未经过真实硬件验证
+
+### 快速开始
+
+#### Mock 模式（无硬件）
+
+```bash
+conda run -n robot_followao_radar robot-follow-lidar-alx-assisted-follow \
+  configs/jetson_g1_lidar_alx_assisted_follow.yaml
+```
+
+此命令使用模拟运动桥，不会驱动真实机器人，适合验证控制逻辑和 Web 界面。
+
+#### 真实 G1 运动条件
+
+真实 G1 运动需要同时满足以下条件：
+
+1. 配置文件中 `output.mode = "real"`
+2. 使用 `--confirm-real-g1` 标志确认
+3. 如果使用临时校准（`calibration.allow_provisional_calibration_for_prototype = true`），还需要 `--allow-provisional-calibration` 标志
+
+```bash
+conda run -n robot_followao_radar robot-follow-lidar-alx-assisted-follow \
+  configs/jetson_g1_lidar_alx_assisted_follow.yaml \
+  --confirm-real-g1 \
+  --allow-provisional-calibration
+```
+
+#### Web 界面
+
+默认 Web 服务器绑定到 `127.0.0.1:8080`：
+
+```bash
+# 在浏览器中打开
+http://127.0.0.1:8080
+```
+
+**LAN 访问（需要确认）：**
+
+如果需要从局域网其他设备访问：
+
+```bash
+conda run -n robot_followao_radar robot-follow-lidar-alx-assisted-follow \
+  configs/jetson_g1_lidar_alx_assisted_follow.yaml \
+  --host 0.0.0.0 \
+  --allow-unauthenticated-lan
+```
+
+**⚠️ 警告：** `--allow-unauthenticated-lan` 会将控制接口暴露到局域网，任何人都可以连接并控制机器人。仅在可信的隔离网络中使用。
+
+### 操作流程
+
+1. **首个 WebSocket 连接成为控制器**
+   - 浏览器连接后，第一个客户端自动成为控制器
+   - 控制器断开后，新连接的客户端成为控制器
+   - 观察者无法发送控制命令
+
+2. **选择目标**
+   - 在点云中点击目标人物
+   - 系统应用初始圆形门控（`web_pick_radius_m = 0.35 m`）
+   - 目标状态变为 `CANDIDATE`（候选）
+
+3. **开始跟随**
+   - 点击 Start 按钮
+   - 需要：有效候选目标、传感器就绪、ALX 新鲜、置信度 >= 0.80
+   - 目标状态变为 `FOLLOWING`，开始发送运动指令
+
+4. **停止跟随**
+   - 点击 Stop 按钮，请求硬停止
+   - 目标保留为 `CANDIDATE`，继续零运动跟踪
+   - 或点击新目标重新选择
+
+### Jetson 部署准备
+
+以下 Jetson 专用预检流程在实施期间**不会执行**。部署到 Jetson 前必须逐一验证：
+
+1. 确认 `/etc/os-release` 为 Ubuntu 20.04，`uname -m` 为 `aarch64`
+2. 确认 `ROS_DISTRO=foxy`，`RMW_IMPLEMENTATION` 已设置
+3. 确认 `/usr/bin/python3 --version` 为 Python 3.8.x
+4. 确认 conda 环境 `robot_followao_radar` 的 Python 也是 3.8.x
+5. 运行导入检查：`rclpy`、`PointCloud2`、`sensor_msgs_py.point_cloud2`、`unitree_sdk2py`、`cyclonedds`
+6. 确认 `/cloud_registered_body` 话题收到 `frame_id == "body"` 的点云
+7. 确认 CycloneDDS 版本与 Unitree SDK 要求一致
+8. 在真实 G1 运动前，先在 mock 模式下运行并通过 stop-only 测试
+
+### 已知风险
+
+- **1 秒 G1 指令持续时间：** G1 命令桥的 SDK 指令持续约 1 秒，不能立即中断
+- **缺少物理速度反馈：** CSV 记录的 `dispatched_*` 是软件发出的指令速度，不是实际机器人速度
+- **临时校准：** 当前所有校准参数标记为 `provisional`，未经过真实硬件验证
+- **NumPy 非抢占性：** `max_strategy_process_ms` 超时无法抢占正在运行的 NumPy 计算
+- **现场停止注入：** 需要在真实机器人上验证急停按钮和 Watchdog 超时机制
+
+### 测试
+
+```bash
+# 运行新原型的所有 Python 测试
+conda run -n robot_followao_radar pytest tests/lidar_alx_assisted_follow/ -v
+
+# 运行前端检查
+cd src/robot_follow/lidar_alx_assisted_follow/frontend
+npm run typecheck
+npm run build
+```
+
+### 残留风险
+
+- 原型使用临时校准，未经过真实硬件验证
+- 缺少物理速度反馈，CSV 记录的是软件指令速度
+- G1 命令桥的 SDK 指令持续时间约 1 秒，不能立即中断
+- 需要现场停止注入和校准验证 checklist
