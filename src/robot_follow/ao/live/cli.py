@@ -10,9 +10,14 @@ from __future__ import annotations
 
 import argparse
 import time
+from dataclasses import replace
 from pathlib import Path
 
-from robot_follow.ao.avoidance.planner import AvoidancePlanner
+from robot_follow.ao.avoidance.planner import (
+    AvoidancePlanner,
+    DefaultAvoidanceConfig,
+    DefaultPlannerConfig,
+)
 from robot_follow.ao.config import load_ao_radar_configs
 from robot_follow.ao.logging.csv_logger import AORadarCSVLogger, timestamped_log_path
 from robot_follow.ao.live.fast_lio_source import FastLIOPointCloudSource
@@ -142,7 +147,18 @@ def build_runtime_from_config(config_paths: Path | list[Path]) -> AORadarRuntime
             return result.report
 
     radar_pipeline = RadarPipelineAdapter(app_config)
-    planner = AvoidancePlanner()
+    planner = AvoidancePlanner(
+        DefaultPlannerConfig(
+            avoidance=replace(
+                DefaultAvoidanceConfig(),
+                lateral_vy_mps=config.avoidance.lateral_vy_mps,
+                forward_vx_when_avoiding_mps=config.avoidance.forward_vx_when_avoiding_mps,
+                max_vx=config.avoidance.max_vx,
+                max_vy=config.avoidance.max_vy,
+                max_omega=config.avoidance.max_omega,
+            )
+        )
+    )
     bridge = (
         MockMotionBridge()
         if config.output.mode == "mock"
@@ -150,6 +166,7 @@ def build_runtime_from_config(config_paths: Path | list[Path]) -> AORadarRuntime
             network_interface=config.output.network_interface,
             config=G1BridgeConfig(
                 max_abs_vx=config.g1.max_vx,
+                max_abs_vy=config.g1.max_vy,
                 max_abs_omega=config.g1.max_omega,
                 yaw_sign=config.g1.yaw_sign,
                 sdk_timeout_s=config.g1.sdk_timeout_s,

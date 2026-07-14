@@ -15,6 +15,9 @@ def test_loads_default_config_values_from_empty_mapping(tmp_path: Path) -> None:
     assert config.alx.port == "/dev/ttyUSB0"
     assert config.alx.stale_timeout_s == 0.5
     assert config.radar.idle_stop_s == 5.0
+    assert config.avoidance.max_vx == 0.5
+    assert config.avoidance.max_vy == 0.2
+    assert config.avoidance.max_omega == 0.8
     assert config.latency.max_command_age_s == 0.2
     assert config.latency.max_cloud_age_s == 0.5
     assert config.output.require_real_g1_confirmation is True
@@ -54,7 +57,14 @@ def test_loads_runtime_overrides(tmp_path: Path) -> None:
         "    min_safe_distance_m: 0.4\n"
         "  g1:\n"
         "    max_vx: 0.08\n"
+        "    max_vy: 0.25\n"
         "    max_omega: 0.20\n"
+        "  avoidance:\n"
+        "    lateral_vy_mps: 0.25\n"
+        "    forward_vx_when_avoiding_mps: 0.05\n"
+        "    max_vx: 0.30\n"
+        "    max_vy: 0.15\n"
+        "    max_omega: 1.20\n"
         "  radar:\n"
         "    idle_stop_s: 5.0\n"
         "    livox_start_command: ros2 launch livox_ros_driver2 msg_MID360_launch.py\n"
@@ -86,7 +96,13 @@ def test_loads_runtime_overrides(tmp_path: Path) -> None:
     assert config.follow.distance_gain_forward == 0.30
     assert config.safety.min_safe_distance_m == 0.4
     assert config.g1.max_vx == 0.08
+    assert config.g1.max_vy == 0.25
     assert config.g1.max_omega == 0.20
+    assert config.avoidance.lateral_vy_mps == 0.25
+    assert config.avoidance.forward_vx_when_avoiding_mps == 0.05
+    assert config.avoidance.max_vx == 0.30
+    assert config.avoidance.max_vy == 0.15
+    assert config.avoidance.max_omega == 1.20
     assert config.radar.idle_stop_s == 5.0
     assert config.radar.livox_start_command.startswith("ros2 launch livox")
     assert config.latency.ao_output_loop_hz == 20.0
@@ -113,7 +129,13 @@ def test_loads_dedicated_ao_radar_config() -> None:
     assert config.follow.max_forward_vx == 2.0
     assert config.safety.min_safe_distance_m == 0.15
     assert config.g1.max_vx == 3.0
-    assert config.g1.max_omega == 2.0
+    assert config.g1.max_vy == 0.30
+    assert config.g1.max_omega == 3.0
+    assert config.avoidance.lateral_vy_mps == 0.30
+    assert config.avoidance.forward_vx_when_avoiding_mps == 0.05
+    assert config.avoidance.max_vx == 2.0
+    assert config.avoidance.max_vy == 0.30
+    assert config.avoidance.max_omega == 1.5
 
 
 def test_later_config_overrides_legacy_base_at_field_level(tmp_path: Path) -> None:

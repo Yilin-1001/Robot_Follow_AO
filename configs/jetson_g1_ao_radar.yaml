@@ -39,6 +39,8 @@ ao_radar:
   # G1 实际输出限幅；即使 follow 输出更大，也会在此被截断。
   g1:
     max_vx: 3.0
+    # AO 侧移避障输出的实体 G1 横向速度上限。
+    max_vy: 0.30
     max_omega: 3.0
     yaw_sign: 1
     sdk_timeout_s: 10.0
@@ -46,6 +48,17 @@ ao_radar:
     sdk_timeout_retry_interval_s: 1.0
     max_consecutive_sdk_timeouts: 3
     command_timeout_s: 0.5
+  # 避障 planner 限幅。这是下发 G1 前的最终速度上限，会截断 follow 段输出
+  # （即便 follow.max_omega / g1.max_omega 更大，也以此为准）。
+  # max_omega 偏低(0.8)会让机器人转身追不上手环、手环滑出雷达 FOV 而转圈；
+  # 调高可加快对准。vx/vy 维持保守值以保留避障安全余量。
+  avoidance:
+    # 前方障碍时以可见的横移避开；最终仍受 avoidance.max_vy 和 g1.max_vy 限制。
+    lateral_vy_mps: 0.30
+    forward_vx_when_avoiding_mps: 0.05
+    max_vx: 2.0
+    max_vy: 0.30
+    max_omega: 1.5
   radar:
     idle_stop_s: 5.0
     livox_start_command: "ros2 launch livox_ros_driver2 msg_MID360_launch.py"

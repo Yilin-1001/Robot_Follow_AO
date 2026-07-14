@@ -197,6 +197,17 @@ def test_over_limit_velocity_is_clamped():
     assert fake.set_velocity_calls == [(0.10, 0.0, 0.30, 1.0)]
 
 
+def test_move_preserves_and_limits_lateral_velocity():
+    fake = FakeLocoClient()
+    cfg = G1BridgeConfig(max_abs_vx=0.10, max_abs_vy=0.15, max_abs_omega=0.30)
+    bridge = G1MotionBridge("eth0", config=cfg, fake_client=fake)
+    bridge.init()
+
+    bridge.move(_move(vx=0.05, vy=0.40, omega=0.10, reason="avoid_left"))
+
+    assert fake.set_velocity_calls == [(0.05, 0.15, 0.10, 1.0)]
+
+
 def test_yaw_sign_flips_omega():
     fake = FakeLocoClient()
     cfg = G1BridgeConfig(yaw_sign=-1)
@@ -449,6 +460,36 @@ def test_watchdog_timeout_calls_stop():
     bridge.tick()
     assert _stop_call_count(fake) >= 1
     assert bridge.state == BridgeState.STOPPED
+
+
+def test_watchdog_warning_is_throttled_with_stop_retries(caplog):
+    """A degraded G1 must not emit one watchdog warning per 40 Hz tick."""
+    fake = FakeLocoClient()
+    t = [0.0]
+    bridge = G1MotionBridge(
+        "eth0",
+        config=G1BridgeConfig(
+            command_timeout_s=0.5,
+            sdk_timeout_retry_interval_s=1.0,
+        ),
+        fake_client=fake,
+        clock=lambda: t[0],
+    )
+    bridge.init()
+    bridge.move(_move())
+    fake.persistent_timeout = True
+
+    for now in (0.6, 0.625, 0.65):
+        t[0] = now
+        bridge.tick()
+
+    watchdog_warnings = [
+        record for record in caplog.records
+        if record.getMessage().startswith("G1 watchdog timeout")
+    ]
+    assert len(watchdog_warnings) == 1
+    assert _stop_call_count(fake) == 1
+    assert bridge.state == BridgeState.SDK_TIMEOUT
 
 
 def test_clock_injection_is_used_by_move_and_tick():

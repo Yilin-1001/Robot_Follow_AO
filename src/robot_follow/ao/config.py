@@ -68,6 +68,7 @@ class AOG1Config:
     """G1 bridge limits and SDK timeout policy for the AO live runner."""
 
     max_vx: float = 0.10
+    max_vy: float = 0.0
     max_omega: float = 0.30
     yaw_sign: int = 1
     sdk_timeout_s: float = 10.0
@@ -75,6 +76,24 @@ class AOG1Config:
     sdk_timeout_retry_interval_s: float = 1.0
     max_consecutive_sdk_timeouts: int = 3
     command_timeout_s: float = 0.5
+
+
+@dataclass(frozen=True)
+class AOAvoidanceConfig:
+    """Avoidance planner velocity limits applied before G1 dispatch.
+
+    These are the final clamps on the safe command: even if ``follow``
+    produces a larger omega/vx, the planner caps it here. Defaults match the
+    planner's built-in ``DefaultAvoidanceConfig`` so omitting the section keeps
+    historical behavior. Raise ``max_omega`` so the robot can turn fast enough
+    to keep the wristband inside the radar FOV while following.
+    """
+
+    lateral_vy_mps: float = 0.08
+    forward_vx_when_avoiding_mps: float = 0.03
+    max_vx: float = 0.5
+    max_vy: float = 0.2
+    max_omega: float = 0.8
 
 
 @dataclass(frozen=True)
@@ -122,6 +141,7 @@ class AORadarConfig:
     follow: AOFollowConfig = field(default_factory=AOFollowConfig)
     safety: AOSafetyConfig = field(default_factory=AOSafetyConfig)
     g1: AOG1Config = field(default_factory=AOG1Config)
+    avoidance: AOAvoidanceConfig = field(default_factory=AOAvoidanceConfig)
     radar: AORadarServiceConfig = field(default_factory=AORadarServiceConfig)
     latency: AOLatencyConfig = field(default_factory=AOLatencyConfig)
     output: AOOutputConfig = field(default_factory=AOOutputConfig)
@@ -159,6 +179,7 @@ def load_ao_radar_configs(paths: Sequence[Path]) -> AORadarConfig:
         follow=_dataclass_from_section(section, "follow", AOFollowConfig),
         safety=_dataclass_from_section(section, "safety", AOSafetyConfig),
         g1=_dataclass_from_section(section, "g1", AOG1Config),
+        avoidance=_dataclass_from_section(section, "avoidance", AOAvoidanceConfig),
         radar=_dataclass_from_section(section, "radar", AORadarServiceConfig),
         latency=_dataclass_from_section(section, "latency", AOLatencyConfig),
         output=_dataclass_from_section(section, "output", AOOutputConfig),

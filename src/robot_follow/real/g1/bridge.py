@@ -13,7 +13,7 @@ likewise returns ``None``.
 To observe SDK failures on the hot path, this bridge calls ``SetVelocity``
 directly instead of the ``Move`` / ``StopMove`` wrappers:
 
-    move -> SetVelocity(vx, 0, omega, duration=1.0)   # == Move(vx, 0, omega) non-continuous
+    move -> SetVelocity(vx, vy, omega, duration=1.0)  # == Move(vx, vy, omega) non-continuous
     stop -> SetVelocity(0.0, 0.0, 0.0, duration=1.0)  # == StopMove()
 
 These are byte-equivalent to the wrappers (both use ``duration=1`` in the
@@ -194,8 +194,8 @@ class G1MotionBridge:
         2. Validate command (kind, finite values)
         3. Clamp velocities to config limits
         4. Apply yaw_sign to omega
-        5. Call SetVelocity(vx, 0, omega, duration=1.0) — byte-equivalent to
-           Move(vx, 0, omega) but returns the real code so failures are detected.
+        5. Call SetVelocity(vx, vy, omega, duration=1.0) — byte-equivalent to
+           Move(vx, vy, omega) but returns the real code so failures are detected.
         """
         self._last_sent_omega = None
         if self._state in (BridgeState.CREATED, BridgeState.ERROR):
@@ -211,7 +211,7 @@ class G1MotionBridge:
             return  # validation failure already recorded + best-effort stop
 
         vx = _clamp(command.vx, -self._config.max_abs_vx, self._config.max_abs_vx)
-        vy = 0.0  # lateral disabled in first release
+        vy = _clamp(command.vy, -self._config.max_abs_vy, self._config.max_abs_vy)
         omega = _clamp(
             self._config.yaw_sign * command.omega,
             -self._config.max_abs_omega,
@@ -291,7 +291,10 @@ class G1MotionBridge:
         if self._state == BridgeState.ERROR:
             return
         elapsed = now - self._last_dispatch_time
-        if elapsed > self._config.command_timeout_s:
+        if (
+            elapsed > self._config.command_timeout_s
+            and self._should_attempt_stop(now)
+        ):
             logger.warning(
                 f"G1 watchdog timeout ({elapsed:.2f}s > {self._config.command_timeout_s}s)"
             )

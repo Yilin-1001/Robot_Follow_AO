@@ -183,3 +183,38 @@ def test_wristband_status_printer_prints_each_main_thread_transition_once(capsys
     printer.emit_if_changed(source)
 
     assert capsys.readouterr().out == "[WRISTBAND] ON\n[WRISTBAND] OFF\n"
+
+
+def test_planner_applies_configured_avoidance_omega_limit(tmp_path: Path) -> None:
+    """Planner must clamp omega to ao_radar.avoidance.max_omega, not the
+    hardcoded 0.8 default nor the larger follow/g1 limits."""
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "ao_radar:\n"
+        "  output:\n"
+        "    mode: mock\n"
+        "  follow:\n"
+        "    max_omega: 3.0\n"
+        "  g1:\n"
+        "    max_omega: 3.0\n"
+        "  avoidance:\n"
+        "    max_vx: 0.5\n"
+        "    max_vy: 0.2\n"
+        "    max_omega: 1.2\n",
+        encoding="utf-8",
+    )
+
+    runtime = build_runtime_from_config(path)
+
+    from robot_follow.ao.live.command_envelope import CommandEnvelope
+    from robot_follow.ao.core.types import ObstacleReport
+    from robot_follow.core.types import MotionCommand
+
+    raw = MotionCommand(kind="move", vx=0.0, vy=0.0, omega=3.0, reason="aligning")
+    envelope = CommandEnvelope(command=raw, generated_at=10.0, source="robot_follow")
+    clear_report = ObstacleReport.clear(timestamp=10.0)
+
+    safe = runtime.planner.filter_command(envelope, clear_report, now=10.01)
+
+    assert safe.kind == "move"
+    assert safe.omega == pytest.approx(1.2)
