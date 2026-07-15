@@ -129,6 +129,23 @@ lidar_alx_assisted_follow:
         components = build_runtime_from_args(args)
         assert components["web_hub"] is not None
 
+    def test_runtime_uses_alx_topic_source_instead_of_serial_reader(self, tmp_path):
+        """The assisted-follow process must never become a second serial owner."""
+        config_path = tmp_path / "test_config.yaml"
+        config_path.write_text(
+            "lidar_alx_assisted_follow:\n  logging:\n    enabled: false\n"
+        )
+
+        from robot_follow.lidar_alx_assisted_follow.cli import build_runtime_from_args
+        from robot_follow.lidar_alx_assisted_follow.sensors.alx_topic import (
+            ALXPositionTopicSource,
+        )
+
+        components = build_runtime_from_args(self._make_args(config=config_path))
+
+        assert isinstance(components["alx_reader"], ALXPositionTopicSource)
+        assert components["runtime"].alx_reader is components["alx_reader"]
+
     def test_select_event_is_retained_until_the_next_cloud(self, tmp_path):
         """A Web click is consumed by the control thread's next cloud pass."""
         config_path = tmp_path / "test_config.yaml"

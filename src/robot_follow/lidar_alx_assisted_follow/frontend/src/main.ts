@@ -27,6 +27,8 @@ interface StatusFrame {
   alx?: {
     body_xy: [number, number] | null;
     age_s: number;
+    stamp_s: number | null;
+    offset_ms: number | null;
     synchronized: boolean;
   };
   lifecycle_state: string;

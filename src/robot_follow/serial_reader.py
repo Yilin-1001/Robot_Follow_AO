@@ -79,9 +79,17 @@ class ALXG100SerialReader:
                 if not self._serial.is_open:
                     self._emit_wristband_off()
                     return
-            sample = self._try_pop_sample()
-            if sample is not None:
-                yield sample
+
+            # A serial read may contain several complete ALX frames.  Drain
+            # them before the next potentially blocking read so the consumer
+            # never replays an avoidable backlog of old position samples.
+            while True:
+                before = len(self._buffer)
+                sample = self._try_pop_sample()
+                if sample is not None:
+                    yield sample
+                if len(self._buffer) >= before:
+                    break
 
     def _try_pop_sample(self) -> Optional[ParsedSample]:
         header_index = self._buffer.find(FRAME_HEADER)

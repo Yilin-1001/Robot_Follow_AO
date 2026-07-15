@@ -112,6 +112,33 @@ conda run -n robot-follow robot-follow-ao-web-sim --host 0.0.0.0 --port 8080
 conda run -n robot-follow python -m robot_follow.main --config configs/jetson_g1_safe.yaml --dry-run
 ```
 
+## ALX ROS2 Kalman 位置 Topic
+
+在 Jetson 已 source ROS2 Foxy 和 FAST-LIO workspace，且 `rclpy`、
+`geometry_msgs` 可被 `robot_followao_radar` 导入时，可单独启动 ALX 的
+ROS2 发布节点：
+
+```bash
+conda run -n robot_followao_radar robot-follow-alx-ros \
+  configs/jetson_g1_lidar_alx_assisted_follow.yaml
+```
+
+若尚未通过 editable install 安装该脚本，可将 `robot-follow-alx-ros` 替换为
+`python -m robot_follow.lidar_alx_assisted_follow.alx_ros_node`。
+
+该节点是 `/dev/ttyUSB0` 的唯一读取者，发布唯一的 `/alx/position` topic：
+`geometry_msgs/PointStamped`、`frame_id=body`、随 ALX 有效新帧更新（当前实测约
+21 Hz）。`point.x` 和
+`point.y` 是经 Kalman 平滑后的 ALX 水平 body 坐标；没有新有效串口帧时不
+重复发布旧位置。Kalman 参数位于同一 YAML 的 `alx_ros` 节。
+
+启动后先在零运动条件下检查：
+
+```bash
+ros2 topic hz /alx/position
+ros2 topic echo /alx/position
+```
+
 ## 真实机器人运行
 
 真实 G1 运动默认关闭。必须同时传入 `--enable-motion` 和 `--i-understand-this-moves-robot`，程序才会创建 `G1MotionBridge` 并向机器人发送速度命令：
@@ -260,12 +287,25 @@ conda run -n robot-follow pytest tests/real/test_alx_source.py
 
 #### Mock 模式（无硬件）
 
+先在一个已经 source ROS2 Foxy、FAST-LIO workspace 且设置相同
+`ROS_DOMAIN_ID` 的终端启动唯一的 ALX 串口发布者：
+
+```bash
+conda run -n robot_followao_radar robot-follow-alx-ros \
+  configs/jetson_g1_lidar_alx_assisted_follow.yaml
+```
+
+再在第二个终端启动辅助跟随程序：
+
 ```bash
 conda run -n robot_followao_radar robot-follow-lidar-alx-assisted-follow \
   configs/jetson_g1_lidar_alx_assisted_follow.yaml
 ```
 
-此命令使用模拟运动桥，不会驱动真实机器人，适合验证控制逻辑和 Web 界面。
+辅助跟随程序只订阅 `/alx/position`，不会再次打开 `/dev/ttyUSB0`。此命令使用
+模拟运动桥，不会驱动真实机器人，适合验证控制逻辑和 Web 界面。ALX 约 21 Hz
+进入有界时间缓存；点云、决策和 Web 仍由点云以约 10 Hz 驱动，并拒绝时间差
+超过配置项 `alx.cloud_max_skew_s` 的 ALX 样本。
 
 #### 真实 G1 运动条件
 

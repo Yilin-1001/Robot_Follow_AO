@@ -10,6 +10,7 @@ import yaml
 from .schema import (
     APFConfig,
     ALXConfig,
+    ALXRosConfig,
     CalibrationConfig,
     ConfidenceConfig,
     G1Config,
@@ -85,6 +86,7 @@ def _build_config(root: Dict[str, Any]) -> PrototypeConfig:
 
     return PrototypeConfig(
         alx=section("alx", ALXConfig),
+        alx_ros=section("alx_ros", ALXRosConfig),
         sensors=section("sensors", SensorsConfig),
         g1=section("g1", G1Config),
         output=section("output", OutputConfig),

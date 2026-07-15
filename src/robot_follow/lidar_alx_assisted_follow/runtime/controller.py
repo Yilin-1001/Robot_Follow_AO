@@ -12,7 +12,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from typing import Deque, List, Optional, Protocol, Tuple
+from typing import Deque, List, Optional, Protocol, Tuple, Union
 
 import numpy as np
 
@@ -43,6 +43,10 @@ from robot_follow.lidar_alx_assisted_follow.runtime.state import (
     StopLatch,
 )
 from robot_follow.lidar_alx_assisted_follow.sensors.alx import ALXSnapshot, ALXSnapshotBuffer
+from robot_follow.lidar_alx_assisted_follow.sensors.alx_topic import (
+    ALXPositionBuffer,
+    ALXPositionSample,
+)
 from robot_follow.lidar_alx_assisted_follow.sensors.cloud import SequencedFastLIOPointCloudSource
 from robot_follow.lidar_alx_assisted_follow.sensors.lifecycle import (
     LifecycleState,
@@ -62,14 +66,16 @@ from robot_follow.ao.live.radar_service_manager import RadarServiceManager
 
 
 class ALXReaderProtocol(Protocol):
-    """Protocol for ALX serial reader."""
+    """Protocol for the filtered ALX ROS2 topic source."""
 
-    def latest_snapshot(self) -> Optional[ALXSnapshot]:
-        """Get latest ALX snapshot."""
+    def latest_snapshot(
+        self,
+    ) -> Optional[Union[ALXSnapshot, ALXPositionSample]]:
+        """Get the latest received ALX position sample."""
         ...
 
     def is_ok(self) -> bool:
-        """Check if serial communication is healthy."""
+        """Check whether the topic source is healthy and fresh."""
         ...
 
 
@@ -95,6 +101,9 @@ class RuntimeState:
     # ALX age
     last_alx_age_ms: float = 0.0
     last_alx_body_xy: Optional[np.ndarray] = None
+    last_alx_stamp_s: Optional[float] = None
+    last_alx_offset_ms: Optional[float] = None
+    last_alx_synchronized: bool = False
 
     # Freshness anchor for watchdog cloud-age checks.
     last_cloud_received_at_s: Optional[float] = None
@@ -119,7 +128,7 @@ class LidarALXAssistedFollowRuntime:
     config: PrototypeConfig
     cloud_source: SequencedFastLIOPointCloudSource
     alx_reader: ALXReaderProtocol
-    alx_buffer: ALXSnapshotBuffer
+    alx_buffer: Union[ALXSnapshotBuffer, ALXPositionBuffer]
     lifecycle: WristbandLifecycleGuardian
     radar_services: RadarServiceManager
     target_manager: TargetLockManager
@@ -294,7 +303,10 @@ class LidarALXAssistedFollowRuntime:
         self.stop_latch.clear_for_start(start_after_sequence)
         self.target_manager.start()
 
-    def _sample_alx(self, now: float) -> Optional[ALXSnapshot]:
+    def _sample_alx(
+        self,
+        now: float,
+    ) -> Optional[Union[ALXSnapshot, ALXPositionSample]]:
         """Sample and deduplicate ALX data.
 
         Parameters
@@ -316,7 +328,7 @@ class LidarALXAssistedFollowRuntime:
 
     def _update_lifecycle(
         self,
-        alx_snapshot: Optional[ALXSnapshot],
+        alx_snapshot: Optional[Union[ALXSnapshot, ALXPositionSample]],
         cloud_received: bool,
         now: float,
     ) -> None:
@@ -367,10 +379,50 @@ class LidarALXAssistedFollowRuntime:
             except Exception:
                 self.stop_latch.request("bridge_fault", StopKind.HARD)
 
+    def _match_alx_for_cloud(
+        self,
+        cloud: CloudSnapshot,
+        now: float,
+    ) -> tuple[Optional[np.ndarray], bool]:
+        """Match one already-filtered ALX sample to this cloud's sensor time."""
+        best_snapshot = self.alx_buffer.for_cloud(
+            cloud.sensor_timestamp_s,
+            self.lifecycle.session_tag_id,
+        )
+
+        alx_body_xy: Optional[np.ndarray] = None
+        alx_fresh = False
+        alx_age_ms = 0.0
+        alx_stamp_s: Optional[float] = None
+        alx_offset_ms: Optional[float] = None
+
+        if best_snapshot is not None:
+            alx_body_xy = self.alx_buffer.transform_to_body(best_snapshot)
+            alx_age_s = max(0.0, now - best_snapshot.received_at)
+            alx_age_ms = alx_age_s * 1000.0
+            # The ROS topic sample has an acquisition/receive stamp mapped to
+            # ROS time.  Legacy raw snapshots use received_at as a fallback so
+            # existing pure runtime tests remain valid during this migration.
+            alx_stamp_s = float(
+                getattr(best_snapshot, "timestamp_s", best_snapshot.received_at)
+            )
+            alx_offset_ms = (cloud.sensor_timestamp_s - alx_stamp_s) * 1000.0
+            alx_fresh = (
+                alx_body_xy is not None
+                and alx_age_s < self.config.alx.stale_timeout_s
+            )
+
+        self._state.last_alx_age_ms = alx_age_ms
+        self._state.last_alx_body_xy = alx_body_xy if alx_fresh else None
+        self._state.last_alx_stamp_s = alx_stamp_s
+        self._state.last_alx_offset_ms = alx_offset_ms
+        self._state.last_alx_synchronized = alx_fresh
+        return self._state.last_alx_body_xy, alx_fresh
+
     def _process_cloud(
         self,
         cloud: CloudSnapshot,
-        alx_snapshot: Optional[ALXSnapshot],
+        alx_snapshot: Optional[Union[ALXSnapshot, ALXPositionSample]],
         now: float,
     ) -> None:
         """Process a cloud (run strategy).
@@ -400,6 +452,10 @@ class LidarALXAssistedFollowRuntime:
             self._log_strategy_zero(cloud, "cloud_stale", now)
             return
 
+        # Match before any early strategy return so decision diagnostics and
+        # Web visualization always describe the same cloud/ALX pair.
+        alx_body_xy, alx_fresh = self._match_alx_for_cloud(cloud, now)
+
         # Check lifecycle
         if self.lifecycle.state != LifecycleState.SENSORS_READY:
             self._log_strategy_zero(cloud, "lifecycle_not_ready", now)
@@ -421,24 +477,7 @@ class LidarALXAssistedFollowRuntime:
             self.config.calibration,
         )
 
-        # Get ALX observation
-        alx_body_xy: Optional[np.ndarray] = None
-        alx_fresh = False
-        alx_age_ms = 0.0
 
-        if alx_snapshot is not None:
-            best_snapshot = self.alx_buffer.for_cloud(
-                cloud.received_at_s,
-                self.lifecycle.session_tag_id,
-            )
-            if best_snapshot is not None:
-                alx_body_xy = self.alx_buffer.transform_to_body(best_snapshot)
-                alx_age_s = now - best_snapshot.received_at
-                alx_age_ms = alx_age_s * 1000.0
-                alx_fresh = alx_age_s < self.config.alx.stale_timeout_s
-
-        self._state.last_alx_age_ms = alx_age_ms
-        self._state.last_alx_body_xy = alx_body_xy
 
         # Check ALX staleness
         if not alx_fresh:
@@ -777,7 +816,9 @@ class LidarALXAssistedFollowRuntime:
                 "alx": {
                     "body_xy": alx_xy.tolist() if alx_xy is not None else None,
                     "age_s": self._state.last_alx_age_ms / 1000.0,
-                    "synchronized": alx_xy is not None,
+                    "stamp_s": self._state.last_alx_stamp_s,
+                    "offset_ms": self._state.last_alx_offset_ms,
+                    "synchronized": self._state.last_alx_synchronized,
                 },
                 "lifecycle_state": self.lifecycle.state.value,
                 "lock_state": target_snapshot.state.value,

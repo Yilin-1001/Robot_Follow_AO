@@ -33,13 +33,16 @@ from robot_follow.lidar_alx_assisted_follow.runtime.controller import (
 )
 from robot_follow.lidar_alx_assisted_follow.runtime.csv_log import PrototypeCSVLogger
 from robot_follow.lidar_alx_assisted_follow.sensors.cloud import SequencedFastLIOPointCloudSource
-from robot_follow.lidar_alx_assisted_follow.sensors.alx import ALXSnapshot, ALXSnapshotBuffer
+from robot_follow.lidar_alx_assisted_follow.sensors.alx import ALXSnapshot
+from robot_follow.lidar_alx_assisted_follow.sensors.alx_topic import (
+    ALXPositionBuffer,
+    ALXPositionTopicSource,
+)
 from robot_follow.lidar_alx_assisted_follow.sensors.lifecycle import WristbandLifecycleGuardian
 from robot_follow.lidar_alx_assisted_follow.tracking.target import TargetLockManager
 from robot_follow.lidar_alx_assisted_follow.motion.limiter import CommandSlewRateLimiter
 from robot_follow.lidar_alx_assisted_follow.web.server import PrototypeWebHub, create_app
 from robot_follow.real.g1.bridge import G1MotionBridge
-from robot_follow.real.alx_source import ALXLiveSource
 from robot_follow.ao.live.radar_service_manager import RadarServiceManager
 
 logger = logging.getLogger(__name__)
@@ -87,7 +90,7 @@ class MockMotionBridge:
 
 
 class ALXLiveReaderAdapter(ALXReaderProtocol):
-    """Adapter from ALXLiveSource to ALXReaderProtocol."""
+    """Legacy adapter retained for compatibility; production no longer uses it."""
 
     def __init__(self, source: Any) -> None:
         self._source = source
@@ -118,7 +121,7 @@ class ALXLiveReaderAdapter(ALXReaderProtocol):
 
 
 class UnavailableALXReader(ALXReaderProtocol):
-    """Safe placeholder used while the composition root is being assembled."""
+    """Legacy safe placeholder retained for isolated tests."""
 
     def latest_snapshot(self) -> Optional[ALXSnapshot]:
         return None
@@ -221,11 +224,12 @@ def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
     )
     components["cloud_source"] = cloud_source
 
-    # ALX buffer
-    alx_buffer = ALXSnapshotBuffer(
+    # Filtered ALX topic input.  This process never opens the serial port; the
+    # standalone ALX ROS publisher is its sole owner.
+    alx_buffer = ALXPositionBuffer(
         alx_config=config.alx,
-        calibration_config=config.calibration,
-        buffer_duration_s=1.0,
+        buffer_duration_s=0.5,
+        max_samples=16,
     )
     components["alx_buffer"] = alx_buffer
 
@@ -245,8 +249,12 @@ def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
         bridge = G1MotionBridge(config.g1.network_interface, config=bridge_config)
     components["bridge"] = bridge
 
-    # ALX reader (will be created in main, this is just for type hints)
-    alx_reader = UnavailableALXReader()
+    alx_reader = ALXPositionTopicSource(
+        topic=config.alx_ros.topic,
+        expected_frame_id=config.alx_ros.frame_id,
+        stale_timeout_s=config.alx.stale_timeout_s,
+        buffer=alx_buffer,
+    )
     components["alx_reader"] = alx_reader
 
     # Lifecycle guardian
@@ -409,19 +417,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         latest_status = components["latest_status"]
         cloud_source = components["cloud_source"]
         alx_buffer = components["alx_buffer"]
+        radar_services = components["radar_services"]
         bridge = components["bridge"]
         lifecycle = components["lifecycle"]
         runtime = components["runtime"]
         web_hub = components["web_hub"]
         csv_logger = components.get("csv_logger")
 
-        # Create ALX reader
-        alx_live_source = ALXLiveSource(
-            port=config.alx.port,
-            baudrate=config.alx.baudrate,
-        )
-        alx_reader = ALXLiveReaderAdapter(alx_live_source)
-        runtime.set_alx_reader(alx_reader)
+        # The ALX input is already composed as a ROS2 topic subscriber.  Do
+        # not create ALXLiveSource here: the publisher node is the only serial
+        # owner.
+        alx_topic_source = components["alx_reader"]
 
         # Shutdown coordination
         shutdown_requested = threading.Event()
@@ -440,9 +446,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.info(f"Web host: {args.host or config.web.host}")
         logger.info(f"Web port: {args.port or config.web.port}")
 
-        # 1. Start ALX reader
-        logger.info("Starting ALX serial reader...")
-        alx_live_source.start()
+        # 1. Start filtered ALX topic subscriber
+        logger.info("Subscribing to filtered ALX topic %s...", config.alx_ros.topic)
+        alx_topic_source.start()
 
         # 2. Start the cloud source.  It imports ROS only in its reader thread.
         logger.info("Starting FAST-LIO cloud reader...")
@@ -526,11 +532,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         # 4. Stop services (sensors)
         logger.info("Stopping sensor services...")
-        # lifecycle.stop_services() would be called here if implemented
+        radar_services.stop()
 
-        # 5. Stop ALX reader
-        logger.info("Stopping ALX reader...")
-        alx_live_source.stop()
+        # 5. Stop ALX topic subscriber
+        logger.info("Stopping ALX topic subscriber...")
+        alx_topic_source.stop()
 
         # 6. Close CSV logger
         if csv_logger:

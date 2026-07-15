@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from itertools import islice
+
 from robot_follow.alx_g100_protocol import PositionSample
 from robot_follow.serial_reader import ALXG100SerialReader
 
@@ -100,6 +102,29 @@ def test_serial_read_timeout_does_not_emit_wristband_off(capsys):
 
     assert isinstance(sample, PositionSample)
     assert capsys.readouterr().out == ""
+
+
+def test_serial_reader_drains_all_complete_frames_before_next_read() -> None:
+    class FakeSerial:
+        is_open = True
+
+        def __init__(self):
+            self.read_count = 0
+
+        def read(self, size):
+            self.read_count += 1
+            if self.read_count > 1:
+                raise AssertionError("reader performed an unnecessary blocking read")
+            return POSITION_FRAME + POSITION_FRAME
+
+    reader = ALXG100SerialReader(port="unused")
+    serial = FakeSerial()
+    reader._serial = serial
+
+    samples = list(islice(reader.read_samples(), 2))
+
+    assert all(isinstance(sample, PositionSample) for sample in samples)
+    assert serial.read_count == 1
 
 
 def test_wristband_state_starts_unknown() -> None:

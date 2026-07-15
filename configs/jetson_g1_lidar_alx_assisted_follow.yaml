@@ -6,9 +6,19 @@ lidar_alx_assisted_follow:
     port: /dev/ttyUSB0
     baudrate: 115200
     stale_timeout_s: 0.50
-    cloud_max_skew_s: 0.15
+    cloud_max_skew_s: 0.08
     min_distance_m: 0.10
-    max_distance_m: 10.0
+    max_distance_m: 20.0
+
+  # Single ROS2 output topic for the Kalman-smoothed horizontal ALX position.
+  # The topic uses geometry_msgs/PointStamped in the body frame.
+  alx_ros:
+    topic: /alx/position
+    frame_id: body
+    poll_hz: 200.0
+    kalman_process_noise: 0.05
+    kalman_measurement_noise: 0.25
+    kalman_max_interval_s: 0.20
 
   sensors:
     topic: /cloud_registered_body

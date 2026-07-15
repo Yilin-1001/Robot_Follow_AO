@@ -62,6 +62,30 @@ class ALXConfig:
 
 
 @dataclass(frozen=True)
+class ALXRosConfig:
+    """ROS2 publication settings for the filtered ALX body-frame position."""
+
+    topic: str = "/alx/position"
+    frame_id: str = "body"
+    poll_hz: float = 200.0
+    kalman_process_noise: float = 0.05
+    kalman_measurement_noise: float = 0.25
+    kalman_max_interval_s: float = 0.20
+
+    def __post_init__(self) -> None:
+        if not self.topic.startswith("/"):
+            raise ValueError(f"alx_ros.topic must be absolute, got {self.topic!r}")
+        if self.frame_id != "body":
+            raise ValueError(
+                f"alx_ros.frame_id must be 'body', got {self.frame_id!r}"
+            )
+        _validate_positive(self.poll_hz, "alx_ros.poll_hz")
+        _validate_positive(self.kalman_process_noise, "alx_ros.kalman_process_noise")
+        _validate_positive(self.kalman_measurement_noise, "alx_ros.kalman_measurement_noise")
+        _validate_positive(self.kalman_max_interval_s, "alx_ros.kalman_max_interval_s")
+
+
+@dataclass(frozen=True)
 class SensorsConfig:
     """Sensor topic and timing configuration."""
 
@@ -391,6 +415,7 @@ class PrototypeConfig:
     """Complete prototype configuration."""
 
     alx: ALXConfig = field(default_factory=ALXConfig)
+    alx_ros: ALXRosConfig = field(default_factory=ALXRosConfig)
     sensors: SensorsConfig = field(default_factory=SensorsConfig)
     g1: G1Config = field(default_factory=G1Config)
     output: OutputConfig = field(default_factory=OutputConfig)
