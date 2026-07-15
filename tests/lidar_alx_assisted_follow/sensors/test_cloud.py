@@ -91,6 +91,16 @@ class TestSequencedFastLIOPointCloudSource:
         snapshot = source.wait_for_update(0.01)
         assert snapshot is None
 
+    def test_wait_for_update_does_not_replay_consumed_snapshot_on_timeout(self) -> None:
+        """A watchdog timeout must not pretend that the last cloud is new."""
+        source = SequencedFastLIOPointCloudSource()
+        source.update_for_test(body_frame(received_at_s=10.0))
+
+        consumed = source.wait_for_update(0.0)
+        assert consumed is not None
+
+        assert source.wait_for_update(0.0) is None
+
     def test_points_are_read_only(self) -> None:
         """Points array should be read-only."""
         source = SequencedFastLIOPointCloudSource()

@@ -58,9 +58,13 @@ class SequencedFastLIOPointCloudSource(FastLIOPointCloudSource):
         CloudSnapshot or None
             The latest snapshot if one arrived, or None on timeout.
         """
-        self._event.wait(timeout=timeout_s)
-        self._event.clear()
-        return self.latest_snapshot()
+        if not self._event.wait(timeout=timeout_s):
+            return None
+
+        with self._sequence_lock:
+            snapshot = self._latest_snapshot
+            self._event.clear()
+            return snapshot
 
     def update_for_test(self, frame) -> None:
         """Update with a new frame, wrapping it in a sequenced CloudSnapshot.
@@ -90,5 +94,4 @@ class SequencedFastLIOPointCloudSource(FastLIOPointCloudSource):
                 frame_id=frame.frame_id,
                 points_xyz=points,
             )
-
-        self._event.set()
+            self._event.set()

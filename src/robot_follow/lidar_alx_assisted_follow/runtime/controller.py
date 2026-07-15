@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Deque, List, Optional, Protocol, Tuple
 
 import numpy as np
@@ -533,24 +533,41 @@ class LidarALXAssistedFollowRuntime:
 
         apf_result = compute_apf(apf_input, self.config.apf, self.config.output_motion)
 
-        # Build strategy result
-
+        compute_ms = (time.monotonic() - compute_start) * 1000.0
         strategy_result = StrategyResult(
             sequence=cloud.sequence,
             apf_requested=apf_result.intent,
-            dispatched=apf_result.intent,  # Will be updated after dispatch
+            dispatched=apf_result.intent,
             safety_complete=True,
             stop_reason=apf_result.stop_reason,
-            compute_ms=(time.monotonic() - compute_start) * 1000.0,
+            compute_ms=compute_ms,
         )
 
-        self._state.last_strategy_result = strategy_result
+        # NumPy work cannot be preempted, but a result that exceeded the
+        # configured budget must never become a motion command.
+        if compute_ms > self.config.runtime.max_strategy_process_ms:
+            timeout_intent = MotionIntent(
+                sequence=cloud.sequence,
+                vx=0.0,
+                vy=0.0,
+                omega=0.0,
+                reason=StopReason.STRATEGY_TIMEOUT.value,
+                generated_at_s=now,
+            )
+            strategy_result = StrategyResult(
+                sequence=cloud.sequence,
+                apf_requested=timeout_intent,
+                dispatched=timeout_intent,
+                safety_complete=True,
+                stop_reason=StopReason.STRATEGY_TIMEOUT,
+                compute_ms=compute_ms,
+            )
 
         # Dispatch to G1
         dispatch_start = time.monotonic()
         latch_snapshot = self.stop_latch.snapshot()
 
-        dispatch_strategy_or_stop(
+        dispatch_result = dispatch_strategy_or_stop(
             strategy=strategy_result,
             latch_snapshot=latch_snapshot,
             bridge=self.bridge,
@@ -560,6 +577,11 @@ class LidarALXAssistedFollowRuntime:
         )
 
         dispatch_ms = (time.monotonic() - dispatch_start) * 1000.0
+        strategy_result = replace(
+            strategy_result,
+            dispatched=dispatch_result.dispatched,
+        )
+        self._state.last_strategy_result = strategy_result
 
         # Log to CSV
         self.csv_logger.log_strategy(
@@ -573,13 +595,20 @@ class LidarALXAssistedFollowRuntime:
             target_center_y=target_snapshot.center_xy[1] if target_snapshot.center_xy else float("nan"),
             target_support_count=observation.point_count if observation else 0,
             confidence=confidence,
-            stop_reason=apf_result.stop_reason.value if apf_result.stop_reason else None,
-            apf_requested_vx=apf_result.intent.vx,
-            apf_requested_vy=apf_result.intent.vy,
-            apf_requested_omega=apf_result.intent.omega,
-            dispatched_vx=apf_result.intent.vx,  # Will be updated after limiter
-            dispatched_vy=apf_result.intent.vy,
-            dispatched_omega=apf_result.intent.omega,
+            stop_reason=(
+                dispatch_result.stop_reason
+                or (
+                    strategy_result.stop_reason.value
+                    if strategy_result.stop_reason is not None
+                    else None
+                )
+            ),
+            apf_requested_vx=strategy_result.apf_requested.vx,
+            apf_requested_vy=strategy_result.apf_requested.vy,
+            apf_requested_omega=strategy_result.apf_requested.omega,
+            dispatched_vx=strategy_result.dispatched.vx,
+            dispatched_vy=strategy_result.dispatched.vy,
+            dispatched_omega=strategy_result.dispatched.omega,
             strategy_compute_ms=strategy_result.compute_ms,
             g1_dispatch_ms=dispatch_ms,
             bridge_state="initialized",

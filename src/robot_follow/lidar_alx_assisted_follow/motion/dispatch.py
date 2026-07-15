@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Optional, Protocol
 
 from robot_follow.core.types import MotionCommand
@@ -34,6 +35,14 @@ class StopLatchProtocol(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class DispatchResult:
+    """The software command actually sent to the bridge."""
+
+    dispatched: MotionIntent
+    stop_reason: Optional[str]
+
+
 def dispatch_strategy_or_stop(
     strategy: StrategyResult,
     latch_snapshot: StopSnapshot,
@@ -41,7 +50,7 @@ def dispatch_strategy_or_stop(
     limiter: CommandSlewRateLimiter,
     now_s: Optional[float] = None,
     latch: Optional[StopLatchProtocol] = None,
-) -> None:
+) -> DispatchResult:
     """Dispatch strategy result or stop command to G1 bridge.
 
     This function implements the final safety gate before motion commands
@@ -76,23 +85,23 @@ def dispatch_strategy_or_stop(
     if latch_snapshot.requested:
         latch_reason = latch_snapshot.reason or "stop"
         _dispatch_mandatory_stop(bridge, limiter, reason=latch_reason)
-        return
+        return _stopped_result(strategy, latch_reason, now_s)
 
     # Check 2: Strategy has stop_reason
     if strategy.stop_reason is not None:
         _dispatch_mandatory_stop(bridge, limiter, reason=strategy.stop_reason.value)
-        return
+        return _stopped_result(strategy, strategy.stop_reason.value, now_s)
 
     # Check 3: Sequence must be > start_after_sequence
     if strategy.sequence <= latch_snapshot.start_after_sequence:
         _dispatch_mandatory_stop(bridge, limiter, reason="motion_not_allowed")
-        return
+        return _stopped_result(strategy, "motion_not_allowed", now_s)
 
     # Check 4: Zero motion intent (safety stop or no motion)
     apf_requested = strategy.apf_requested
     if _is_zero_intent(apf_requested):
         _dispatch_mandatory_stop(bridge, limiter, reason=apf_requested.reason)
-        return
+        return _stopped_result(strategy, apf_requested.reason, now_s)
 
     # Apply slew rate limiting
     limited_intent = limiter.limit(strategy.apf_requested, now_s=now_s)
@@ -100,7 +109,7 @@ def dispatch_strategy_or_stop(
     # Final check: limited intent is zero
     if _is_zero_intent(limited_intent):
         _dispatch_zero_motion(bridge, limiter, now_s=now_s, reason=limited_intent.reason)
-        return
+        return DispatchResult(dispatched=limited_intent, stop_reason=None)
 
     # Re-read the latch immediately before a nonzero bridge call.  A Web or
     # lifecycle thread may have requested STOP while APF or limiting ran.
@@ -112,7 +121,11 @@ def dispatch_strategy_or_stop(
                 limiter,
                 reason=live_snapshot.reason or "stop",
             )
-            return
+            return _stopped_result(
+                strategy,
+                live_snapshot.reason or "stop",
+                now_s,
+            )
 
     # Dispatch limited motion
     command = MotionCommand(
@@ -124,6 +137,26 @@ def dispatch_strategy_or_stop(
     )
     bridge.dispatch(command)
     bridge.tick(now_s)
+    return DispatchResult(dispatched=limited_intent, stop_reason=None)
+
+
+def _stopped_result(
+    strategy: StrategyResult,
+    reason: str,
+    now_s: float,
+) -> DispatchResult:
+    """Build the zero-velocity result corresponding to a mandatory stop."""
+    return DispatchResult(
+        dispatched=MotionIntent(
+            sequence=strategy.sequence,
+            vx=0.0,
+            vy=0.0,
+            omega=0.0,
+            reason=reason,
+            generated_at_s=now_s,
+        ),
+        stop_reason=reason,
+    )
 
 
 def _dispatch_mandatory_stop(

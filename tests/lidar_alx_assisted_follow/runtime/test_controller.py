@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import time
 from typing import Optional
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
 
-from robot_follow.lidar_alx_assisted_follow.config.schema import PrototypeConfig
+from robot_follow.lidar_alx_assisted_follow.config.schema import (
+    PrototypeConfig,
+    RuntimeConfig,
+)
 from robot_follow.lidar_alx_assisted_follow.domain.models import (
     CloudSnapshot,
     MotionIntent,
@@ -18,14 +21,28 @@ from robot_follow.lidar_alx_assisted_follow.domain.models import (
     StrategyResult,
 )
 from robot_follow.lidar_alx_assisted_follow.motion.limiter import CommandSlewRateLimiter
+from robot_follow.lidar_alx_assisted_follow.motion.apf import APFResult
+from robot_follow.lidar_alx_assisted_follow.runtime.controller import (
+    LidarALXAssistedFollowRuntime,
+)
 from robot_follow.lidar_alx_assisted_follow.runtime.state import (
     ControlEvent,
     ControlEventInbox,
     ControlEventKind,
     StopLatch,
+    LatestStatus,
 )
-from robot_follow.lidar_alx_assisted_follow.sensors.alx import ALXSnapshot
+from robot_follow.lidar_alx_assisted_follow.sensors.alx import (
+    ALXSnapshot,
+    ALXSnapshotBuffer,
+)
 from robot_follow.lidar_alx_assisted_follow.sensors.cloud import SequencedFastLIOPointCloudSource
+from robot_follow.lidar_alx_assisted_follow.sensors.lifecycle import (
+    LifecycleState,
+    WristbandLifecycleGuardian,
+)
+from robot_follow.lidar_alx_assisted_follow.tracking.target import TargetLockManager
+from robot_follow.lidar_alx_assisted_follow.domain.models import PreprocessedCloud
 
 
 def make_cloud_snapshot(
@@ -267,7 +284,126 @@ def test_strategy_timeout_dispatches_zero():
 
     The timeout cannot preempt NumPy already running; this limitation is logged.
     """
-    pass
+    config = PrototypeConfig(
+        runtime=RuntimeConfig(max_strategy_process_ms=1.0),
+    )
+    lifecycle = WristbandLifecycleGuardian(config.sensors.ready_timeout_s)
+    lifecycle._state = LifecycleState.SENSORS_READY
+    lifecycle._session_tag_id = 1
+    alx = ALXSnapshot(
+        received_at=9.99,
+        distance_m=1.5,
+        azimuth_deg=0.0,
+        elevation_deg=0.0,
+        tag_id=1,
+        error=False,
+    )
+    alx_buffer = ALXSnapshotBuffer(config.alx, config.calibration)
+    alx_buffer.append(alx, now=10.0)
+    bridge = Mock()
+    runtime = LidarALXAssistedFollowRuntime(
+        config=config,
+        cloud_source=Mock(),
+        alx_reader=Mock(),
+        alx_buffer=alx_buffer,
+        lifecycle=lifecycle,
+        radar_services=Mock(),
+        target_manager=TargetLockManager(config.target),
+        stop_latch=StopLatch(control_thread_id=0),
+        event_inbox=ControlEventInbox(),
+        latest_status=LatestStatus(),
+        limiter=CommandSlewRateLimiter(config.output_motion),
+        bridge=bridge,
+        csv_logger=Mock(),
+    )
+    runtime._pending_click_xy = (1.5, 0.0)
+    points = np.array(
+        [[1.46 + 0.01 * index, 0.0, -0.80 + 0.08 * index]
+         for index in range(8)],
+        dtype=np.float64,
+    )
+    preprocessed = PreprocessedCloud(
+        points_xyz=points,
+        source_indices=np.arange(len(points), dtype=np.int64),
+    )
+    cloud = make_cloud_snapshot(sequence=1, received_at_s=9.99)
+    apf_intent = make_motion_intent(sequence=1, vx=0.10, reason="follow")
+
+    with patch(
+        "robot_follow.lidar_alx_assisted_follow.runtime.controller.preprocess_tracking_cloud",
+        return_value=preprocessed,
+    ), patch(
+        "robot_follow.lidar_alx_assisted_follow.runtime.controller.compute_apf",
+        return_value=APFResult(intent=apf_intent, stop_reason=None),
+    ), patch(
+        "robot_follow.lidar_alx_assisted_follow.runtime.controller.time.monotonic",
+        side_effect=[10.0, 10.002, 10.003, 10.004],
+    ):
+        runtime._process_cloud(cloud, alx, now=10.0)
+
+    assert runtime._state.last_strategy_result is not None
+    assert runtime._state.last_strategy_result.stop_reason == StopReason.STRATEGY_TIMEOUT
+    assert runtime._state.last_strategy_result.apf_requested.vx == 0.0
+    assert bridge.dispatch.call_args[0][0].kind == "stop"
+
+
+def test_runtime_logs_the_slew_limited_command_not_the_apf_request():
+    """CSV and status state must expose the command actually sent to G1."""
+    config = PrototypeConfig()
+    lifecycle = WristbandLifecycleGuardian(config.sensors.ready_timeout_s)
+    lifecycle._state = LifecycleState.SENSORS_READY
+    lifecycle._session_tag_id = 1
+    alx = ALXSnapshot(9.99, 1.5, 0.0, 0.0, 1, False)
+    alx_buffer = ALXSnapshotBuffer(config.alx, config.calibration)
+    alx_buffer.append(alx, now=10.0)
+    bridge = Mock()
+    csv_logger = Mock()
+    limiter = CommandSlewRateLimiter(config.output_motion)
+    limiter.limit(make_motion_intent(sequence=0, vx=0.0), now_s=9.99)
+    runtime = LidarALXAssistedFollowRuntime(
+        config=config,
+        cloud_source=Mock(),
+        alx_reader=Mock(),
+        alx_buffer=alx_buffer,
+        lifecycle=lifecycle,
+        radar_services=Mock(),
+        target_manager=TargetLockManager(config.target),
+        stop_latch=StopLatch(control_thread_id=0),
+        event_inbox=ControlEventInbox(),
+        latest_status=LatestStatus(),
+        limiter=limiter,
+        bridge=bridge,
+        csv_logger=csv_logger,
+    )
+    runtime._pending_click_xy = (1.5, 0.0)
+    points = np.array(
+        [[1.46 + 0.01 * index, 0.0, -0.80 + 0.08 * index]
+         for index in range(8)],
+        dtype=np.float64,
+    )
+    preprocessed = PreprocessedCloud(
+        points_xyz=points,
+        source_indices=np.arange(len(points), dtype=np.int64),
+    )
+    cloud = make_cloud_snapshot(sequence=1, received_at_s=9.99)
+    apf_intent = make_motion_intent(sequence=1, vx=0.10, reason="follow")
+
+    with patch(
+        "robot_follow.lidar_alx_assisted_follow.runtime.controller.preprocess_tracking_cloud",
+        return_value=preprocessed,
+    ), patch(
+        "robot_follow.lidar_alx_assisted_follow.runtime.controller.compute_apf",
+        return_value=APFResult(intent=apf_intent, stop_reason=None),
+    ), patch(
+        "robot_follow.lidar_alx_assisted_follow.runtime.controller.time.monotonic",
+        side_effect=[10.0, 10.0005, 10.001, 10.0015],
+    ):
+        runtime._process_cloud(cloud, alx, now=10.0)
+
+    assert runtime._state.last_strategy_result is not None
+    assert runtime._state.last_strategy_result.apf_requested.vx == 0.10
+    assert runtime._state.last_strategy_result.dispatched.vx == pytest.approx(0.0015)
+    assert csv_logger.log_strategy.call_args.kwargs["dispatched_vx"] == pytest.approx(0.0015)
 
 
 # ============================================================================

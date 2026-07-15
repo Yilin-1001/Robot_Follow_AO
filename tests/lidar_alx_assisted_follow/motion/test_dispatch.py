@@ -361,6 +361,36 @@ class TestSlewRateLimiting:
         # max delta = 0.15 * 0.010 = 0.0015
         assert 0 < bridge.commands[0].vx < 0.01  # Limited, not full 0.10
 
+    def test_dispatch_result_reports_the_limited_command(self):
+        """Consumers must receive the velocity actually sent after slew limiting."""
+        limiter = CommandSlewRateLimiter(
+            OutputMotionConfig(
+                max_vx=0.10,
+                accel_vx=0.15,
+                decel_vx=0.30,
+                accel_vy=10.0,
+                decel_vy=10.0,
+                accel_omega=10.0,
+                decel_omega=10.0,
+            )
+        )
+        bridge = FakeBridge()
+        strategy = make_strategy(sequence=10, vx=0.10)
+        latch_snapshot = make_latch_snapshot(
+            requested=False, start_after_sequence=8
+        )
+
+        dispatch_strategy_or_stop(
+            strategy, latch_snapshot, bridge, limiter, now_s=1.0
+        )
+        result = dispatch_strategy_or_stop(
+            strategy, latch_snapshot, bridge, limiter, now_s=1.01
+        )
+
+        assert result.dispatched.vx == pytest.approx(0.0015)
+        assert result.dispatched.vy == 0.0
+        assert result.dispatched.omega == 0.0
+
 
 class TestLimiterReset:
     """Test that mandatory stop resets the limiter."""
