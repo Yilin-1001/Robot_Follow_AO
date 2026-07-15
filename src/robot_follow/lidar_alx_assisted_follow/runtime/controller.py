@@ -449,12 +449,19 @@ class LidarALXAssistedFollowRuntime:
         previous_target = self.target_manager.snapshot()
         if is_selected_seed:
             observation = self.target_manager.select(
-                preprocessed, self._pending_click_xy, now
+                preprocessed,
+                self._pending_click_xy,
+                now,
+                measurement_timestamp_s=cloud.received_at_s,
             )
             self._pending_click_xy = None
             lost = False
         else:
-            observation, lost = self.target_manager.update(preprocessed, now)
+            observation, lost = self.target_manager.update(
+                preprocessed,
+                now,
+                measurement_timestamp_s=cloud.received_at_s,
+            )
 
         if lost:
             self.stop_latch.request("target_lost", StopKind.HARD)
@@ -517,14 +524,19 @@ class LidarALXAssistedFollowRuntime:
             self.stop_latch.clear_soft_recovery()
 
         # Check if we have a valid target
-        if observation is None or target_snapshot.center_xy is None:
+        follow_center_xy = self.target_manager.follow_center_xy
+        if (
+            observation is None
+            or target_snapshot.center_xy is None
+            or follow_center_xy is None
+        ):
             self._log_strategy_zero(cloud, "no_target", now)
             return
 
         # Run APF
         apf_input = APFInput(
             cloud=preprocessed,
-            target_center_xy=target_snapshot.center_xy,
+            target_center_xy=follow_center_xy,
             target_mask=observation.target_mask,
             confidence=confidence,
             sequence=cloud.sequence,

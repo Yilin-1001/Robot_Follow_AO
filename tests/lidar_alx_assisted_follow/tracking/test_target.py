@@ -26,7 +26,10 @@ def make_preprocessed_cloud(
     return preprocess_tracking_cloud(points, config, calibration)
 
 
-def make_valid_target_cloud(config: TargetConfig) -> PreprocessedCloud:
+def make_valid_target_cloud(
+    config: TargetConfig,
+    x_offset: float = 0.0,
+) -> PreprocessedCloud:
     """Create a cloud with valid target characteristics.
 
     Ensures:
@@ -39,7 +42,7 @@ def make_valid_target_cloud(config: TargetConfig) -> PreprocessedCloud:
     for i in range(6):
         for j in range(5):
             # Spread across x,y and varying z for vertical extent
-            x = 1.0 + i * 0.08  # ~0.5m wide
+            x = 1.0 + x_offset + i * 0.08  # ~0.5m wide
             y = -0.1 + j * 0.05  # ~0.25m deep
             z = 0.3 + (i + j) * 0.06  # Vertical spread 0.3 to ~1.0
             points.append([x, y, z])
@@ -148,6 +151,66 @@ class TestTargetLockManagerStates:
 
         assert manager.state == LockState.EMPTY
         assert manager.center_xy is None
+
+
+class TestTargetLockManagerAPFKalmanCenter:
+    """Tests for the APF-only Kalman output."""
+
+    def test_filtering_leaves_raw_tracking_center_unchanged(self) -> None:
+        """The target lock remains raw while APF receives a smoothed point."""
+        config = TargetConfig(
+            kalman_enabled=True,
+            min_support_points=2,
+            min_vertical_extent_m=0.1,
+        )
+        manager = TargetLockManager(config=config)
+        first_cloud = make_valid_target_cloud(config)
+        manager.select(
+            first_cloud,
+            click_xy=(1.1, 0.0),
+            now_s=1.0,
+            measurement_timestamp_s=10.0,
+        )
+        first_raw_center = manager.center_xy
+        manager.start()
+
+        observation, lost = manager.update(
+            make_valid_target_cloud(config, x_offset=0.10),
+            now_s=1.1,
+            measurement_timestamp_s=10.1,
+        )
+
+        assert observation is not None
+        assert lost is False
+        assert manager.center_xy == observation.center_xy
+        assert manager.follow_center_xy is not None
+        assert first_raw_center is not None
+        assert first_raw_center[0] < manager.follow_center_xy[0] < observation.center_xy[0]
+
+    def test_disabled_filter_returns_raw_tracking_center_to_apf(self) -> None:
+        """Disabling Kalman preserves the historical raw-center output."""
+        config = TargetConfig(
+            kalman_enabled=False,
+            min_support_points=2,
+            min_vertical_extent_m=0.1,
+        )
+        manager = TargetLockManager(config=config)
+        manager.select(
+            make_valid_target_cloud(config),
+            click_xy=(1.1, 0.0),
+            now_s=1.0,
+            measurement_timestamp_s=10.0,
+        )
+        manager.start()
+
+        observation, _ = manager.update(
+            make_valid_target_cloud(config, x_offset=0.10),
+            now_s=1.1,
+            measurement_timestamp_s=10.1,
+        )
+
+        assert observation is not None
+        assert manager.follow_center_xy == observation.center_xy
 
 
 class TestTargetLockManagerGating:

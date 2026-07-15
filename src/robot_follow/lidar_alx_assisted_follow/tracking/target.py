@@ -14,6 +14,7 @@ from robot_follow.lidar_alx_assisted_follow.domain import (
     GatedTargetObservation,
     PreprocessedCloud,
 )
+from robot_follow.lidar_alx_assisted_follow.tracking.kalman import KalmanFilter2D
 
 
 class LockState(str, Enum):
@@ -65,6 +66,18 @@ class TargetLockManager:
 
     # Internal tracking state
     _last_observation: Optional[GatedTargetObservation] = None
+    _kalman: KalmanFilter2D = field(init=False, repr=False)
+    _follow_center_xy: Optional[Tuple[float, float]] = field(
+        default=None, init=False, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        self._kalman = self._new_kalman()
+
+    @property
+    def follow_center_xy(self) -> Optional[Tuple[float, float]]:
+        """Return the APF-only target center, filtered when enabled."""
+        return self._follow_center_xy
 
     def snapshot(self) -> TargetLockSnapshot:
         """Get immutable snapshot of current state."""
@@ -81,6 +94,7 @@ class TargetLockManager:
         cloud: PreprocessedCloud,
         click_xy: Tuple[float, float],
         now_s: float,
+        measurement_timestamp_s: Optional[float] = None,
     ) -> Optional[GatedTargetObservation]:
         """Select a new target near the clicked point.
 
@@ -134,6 +148,10 @@ class TargetLockManager:
         self.center_xy = observation.center_xy
         self.last_seen_at_s = observation.observed_at_s
         self._last_observation = observation
+        self._reset_follow_center(
+            observation.center_xy,
+            now_s if measurement_timestamp_s is None else measurement_timestamp_s,
+        )
         self.requires_start = True
         self.sequence += 1
 
@@ -143,6 +161,7 @@ class TargetLockManager:
         self,
         cloud: PreprocessedCloud,
         now_s: float,
+        measurement_timestamp_s: Optional[float] = None,
     ) -> Tuple[Optional[GatedTargetObservation], bool]:
         """Update target tracking with new cloud.
 
@@ -182,6 +201,10 @@ class TargetLockManager:
             self.center_xy = observation.center_xy
             self.last_seen_at_s = observation.observed_at_s
             self._last_observation = observation
+            self._update_follow_center(
+                observation.center_xy,
+                now_s if measurement_timestamp_s is None else measurement_timestamp_s,
+            )
 
             # Check displacement for c_t
             if self._last_observation is not None:
@@ -237,6 +260,7 @@ class TargetLockManager:
         self.center_xy = None
         self.last_seen_at_s = 0.0
         self._last_observation = None
+        self._clear_follow_center()
         self.requires_start = False
         self.sequence += 1
 
@@ -361,9 +385,46 @@ class TargetLockManager:
 
         return True
 
+    def _new_kalman(self) -> KalmanFilter2D:
+        return KalmanFilter2D(
+            process_noise=self.config.kalman_process_noise,
+            measurement_noise=self.config.kalman_measurement_noise,
+            max_interval_s=self.config.max_frame_interval_s,
+        )
+
+    def _reset_follow_center(
+        self,
+        raw_center_xy: Tuple[float, float],
+        measurement_timestamp_s: float,
+    ) -> None:
+        self._kalman = self._new_kalman()
+        if self.config.kalman_enabled:
+            self._follow_center_xy = self._kalman.reset(
+                raw_center_xy[0], raw_center_xy[1], measurement_timestamp_s
+            )
+        else:
+            self._follow_center_xy = raw_center_xy
+
+    def _update_follow_center(
+        self,
+        raw_center_xy: Tuple[float, float],
+        measurement_timestamp_s: float,
+    ) -> None:
+        if self.config.kalman_enabled:
+            self._follow_center_xy = self._kalman.update(
+                raw_center_xy[0], raw_center_xy[1], measurement_timestamp_s
+            )
+        else:
+            self._follow_center_xy = raw_center_xy
+
+    def _clear_follow_center(self) -> None:
+        self._kalman = self._new_kalman()
+        self._follow_center_xy = None
+
     def _enter_lost_state(self) -> None:
         """Transition to LOST state and clear target."""
         self.state = LockState.LOST
         self.center_xy = None
         self._last_observation = None
+        self._clear_follow_center()
         self.sequence += 1
