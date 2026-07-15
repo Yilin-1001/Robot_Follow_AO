@@ -282,3 +282,103 @@ html, body {
 .error-message.hidden {
   display: none;
 }
+
+@media (max-width: 768px) {
+  :root {
+    --header-h: 40px;
+  }
+
+  .header {
+    padding: 0 10px;
+  }
+
+  .header-title {
+    font-size: 13px;
+  }
+
+  .main-content {
+    flex-direction: column;
+    height: calc(100dvh - var(--header-h));
+  }
+
+  .controls-section {
+    order: 1;
+    width: 100%;
+    flex: 0 0 auto;
+    display: grid;
+    grid-template-columns: 1fr;
+    overflow: visible;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .canvas-section {
+    order: 2;
+    flex: 1 1 auto;
+    min-height: 0;
+    border-right: 0;
+  }
+
+  .status-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .status-item {
+    min-width: 0;
+    padding: 6px 7px;
+  }
+
+  .status-label {
+    font-size: 9px;
+    margin-bottom: 1px;
+  }
+
+  .status-value {
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .command-display {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .command-item {
+    padding: 5px 8px;
+  }
+
+  .command-label {
+    font-size: 9px;
+  }
+
+  .command-value {
+    font-size: 13px;
+  }
+
+  .control-buttons {
+    padding: 6px 8px;
+  }
+
+  .btn {
+    padding: 7px 0;
+    font-size: 12px;
+  }
+
+  .error-message {
+    margin: 0;
+    border-radius: 0;
+  }
+
+  .calibration-banner {
+    top: 8px;
+    right: 8px;
+    font-size: 10px;
+    padding: 3px 7px;
+  }
+}
+
+@media (max-width: 420px) {
+  .status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

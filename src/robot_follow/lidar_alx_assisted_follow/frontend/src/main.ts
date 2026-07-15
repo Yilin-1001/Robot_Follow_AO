@@ -8,9 +8,9 @@ interface Point2D {
   y: number;
 }
 
-interface Point3D extends Point2D {
-  z: number;
-}
+// The backend serializes NumPy point clouds with ``tolist()``, so each point
+// arrives as a JSON tuple-like array: [x, y, z].
+type Point3D = [number, number, number];
 
 interface StatusFrame {
   version: number;
@@ -78,13 +78,22 @@ type ServerMessage = RoleMessage | FrameMessage | ErrorMessage | AckMessage;
 // Canvas rendering constants
 const GRID_SPACING_M = 1.0;
 const GRID_COLOR = "#21262d";
-const POINT_COLOR = "#8b949e";
+const POINT_COLOR = "#9fdcff";
 const TARGET_COLOR = "#9ecc3b";
 const ALX_COLOR = "#3fb950";
 const GATE_COLOR = "#bc8cff";
-const SCALE = 80; // pixels per meter
-const CENTER_X = 400;
-const CENTER_Y = 300;
+const CONNECTION_COLOR = "rgba(158, 204, 59, 0.18)";
+const CONNECTION_BORDER_COLOR = "rgba(158, 204, 59, 0.82)";
+const MAX_SCALE = 80; // pixels per meter
+const MIN_SCALE = 28;
+const VIEWPORT_PADDING_PX = 28;
+const MAX_ALX_TRAIL_POINTS = 40;
+
+interface Viewport {
+  centerX: number;
+  centerY: number;
+  scale: number;
+}
 
 class LiDARMonitor {
   private ws: WebSocket | null = null;
@@ -94,6 +103,7 @@ class LiDARMonitor {
   private latestFrame: StatusFrame | null = null;
   private reconnectAttempts = 0;
   private selectedTarget: Point2D | null = null;
+  private alxTrail: Point2D[] = [];
 
   // UI Elements
   private roleDisplay: HTMLElement;
@@ -125,6 +135,7 @@ class LiDARMonitor {
     this.errorMessage = document.getElementById("error-message")!;
 
     this.setupEventHandlers();
+    this.resizeCanvas();
     this.connect();
   }
 
@@ -141,9 +152,9 @@ class LiDARMonitor {
       const canvasX = (e.clientX - rect.left) * scaleX;
       const canvasY = (e.clientY - rect.top) * scaleY;
 
-      // Convert to world coordinates (robot-centric)
-      const worldX = (canvasX - CENTER_X) / SCALE;
-      const worldY = (CENTER_Y - canvasY) / SCALE;
+      const viewport = this.getViewport();
+      const worldX = (canvasX - viewport.centerX) / viewport.scale;
+      const worldY = (viewport.centerY - canvasY) / viewport.scale;
 
       this.selectedTarget = { x: worldX, y: worldY };
       this.sendSelectTarget(worldX, worldY);
@@ -164,6 +175,7 @@ class LiDARMonitor {
 
     // Window resize
     window.addEventListener("resize", () => {
+      this.resizeCanvas();
       this.render();
     });
   }
@@ -216,6 +228,7 @@ class LiDARMonitor {
 
       case "frame":
         this.latestFrame = msg.payload;
+        this.updateALXTrail(msg.payload);
         this.updateDisplay();
         this.render();
         break;
@@ -272,6 +285,8 @@ class LiDARMonitor {
   }
 
   private render(): void {
+    this.resizeCanvas();
+
     const ctx = this.ctx;
     const width = this.canvas.width;
     const height = this.canvas.height;
@@ -283,10 +298,21 @@ class LiDARMonitor {
     // Draw grid
     this.drawGrid();
 
+    // Draw the recent ALX path before the point cloud so its current position
+    // remains easy to identify even in a dense scan.
+    this.drawALXTrail();
+
     // Draw points
     if (this.latestFrame) {
       this.drawPoints(this.latestFrame.points, POINT_COLOR, 1);
       this.drawPoints(this.latestFrame.target_points || [], TARGET_COLOR, 2);
+
+      // A target is drawn from the validated lock center, not directly from
+      // the browser click.  This makes the visual link match the target that
+      // the control loop is actually tracking.
+      if (this.latestFrame.target_gate && this.hasActiveTarget()) {
+        this.drawTargetConnection(this.latestFrame.target_gate);
+      }
 
       // Draw gate ellipse
       if (this.latestFrame.target_gate) {
@@ -305,13 +331,122 @@ class LiDARMonitor {
     }
   }
 
+  private hasActiveTarget(): boolean {
+    const lockState = this.latestFrame?.lock_state;
+    return lockState === "candidate" || lockState === "following";
+  }
+
+  private updateALXTrail(frame: StatusFrame): void {
+    const alx = frame.alx;
+    if (!alx?.body_xy || !alx.synchronized) {
+      this.alxTrail = [];
+      return;
+    }
+
+    const [x, y] = alx.body_xy;
+    const previous = this.alxTrail[this.alxTrail.length - 1];
+    if (previous && previous.x === x && previous.y === y) {
+      return;
+    }
+
+    this.alxTrail.push({ x, y });
+    if (this.alxTrail.length > MAX_ALX_TRAIL_POINTS) {
+      this.alxTrail.shift();
+    }
+  }
+
+  private resizeCanvas(): void {
+    const rect = this.canvas.getBoundingClientRect();
+    const nextWidth = Math.max(1, Math.floor(rect.width));
+    const nextHeight = Math.max(1, Math.floor(rect.height));
+
+    if (this.canvas.width !== nextWidth || this.canvas.height !== nextHeight) {
+      this.canvas.width = nextWidth;
+      this.canvas.height = nextHeight;
+    }
+  }
+
+  private getViewport(): Viewport {
+    const centerX = this.canvas.width / 2;
+    const centerY = this.canvas.height / 2;
+    const scale = this.getVisibleScale();
+    return { centerX, centerY, scale };
+  }
+
+  private getVisibleScale(): number {
+    const bounds = this.getVisibleBounds();
+    const availableWidth = Math.max(1, this.canvas.width - VIEWPORT_PADDING_PX * 2);
+    const availableHeight = Math.max(1, this.canvas.height - VIEWPORT_PADDING_PX * 2);
+    const spanX = Math.max(1, Math.max(Math.abs(bounds.minX), Math.abs(bounds.maxX)) * 2);
+    const spanY = Math.max(1, Math.max(Math.abs(bounds.minY), Math.abs(bounds.maxY)) * 2);
+    const fitScale = Math.min(availableWidth / spanX, availableHeight / spanY);
+
+    return Math.max(MIN_SCALE, Math.min(MAX_SCALE, fitScale));
+  }
+
+  private getVisibleBounds(): {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+  } {
+    const bounds = { minX: -2, maxX: 2, minY: -2, maxY: 2 };
+    const include = (x: number, y: number): void => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return;
+      }
+      bounds.minX = Math.min(bounds.minX, x);
+      bounds.maxX = Math.max(bounds.maxX, x);
+      bounds.minY = Math.min(bounds.minY, y);
+      bounds.maxY = Math.max(bounds.maxY, y);
+    };
+
+    if (this.latestFrame) {
+      for (const point of this.latestFrame.points) {
+        include(point[0], point[1]);
+      }
+      for (const point of this.latestFrame.target_points || []) {
+        include(point[0], point[1]);
+      }
+
+      const gate = this.latestFrame.target_gate;
+      if (gate) {
+        include(gate.center_xy[0] - gate.radial_radius_m, gate.center_xy[1] - gate.tangential_radius_m);
+        include(gate.center_xy[0] + gate.radial_radius_m, gate.center_xy[1] + gate.tangential_radius_m);
+      }
+
+      const alx = this.latestFrame.alx?.body_xy;
+      if (alx) {
+        include(alx[0], alx[1]);
+      }
+    }
+
+    for (const point of this.alxTrail) {
+      include(point.x, point.y);
+    }
+    if (this.selectedTarget) {
+      include(this.selectedTarget.x, this.selectedTarget.y);
+    }
+
+    return bounds;
+  }
+
+  private toCanvas(point: Point2D, viewport: Viewport): Point2D {
+    return {
+      x: viewport.centerX + point.x * viewport.scale,
+      y: viewport.centerY - point.y * viewport.scale,
+    };
+  }
+
   private drawGrid(): void {
     const ctx = this.ctx;
+    const viewport = this.getViewport();
     ctx.strokeStyle = GRID_COLOR;
     ctx.lineWidth = 1;
 
     // Vertical lines
-    for (let x = CENTER_X % (GRID_SPACING_M * SCALE); x < this.canvas.width; x += GRID_SPACING_M * SCALE) {
+    const gridStep = GRID_SPACING_M * viewport.scale;
+    for (let x = viewport.centerX % gridStep; x < this.canvas.width; x += gridStep) {
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, this.canvas.height);
@@ -319,7 +454,7 @@ class LiDARMonitor {
     }
 
     // Horizontal lines
-    for (let y = CENTER_Y % (GRID_SPACING_M * SCALE); y < this.canvas.height; y += GRID_SPACING_M * SCALE) {
+    for (let y = viewport.centerY % gridStep; y < this.canvas.height; y += gridStep) {
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(this.canvas.width, y);
@@ -329,20 +464,20 @@ class LiDARMonitor {
     // Draw origin (robot position)
     ctx.fillStyle = "#484f58";
     ctx.beginPath();
-    ctx.arc(CENTER_X, CENTER_Y, 4, 0, 2 * Math.PI);
+    ctx.arc(viewport.centerX, viewport.centerY, 4, 0, 2 * Math.PI);
     ctx.fill();
   }
 
   private drawPoints(points: Point3D[], color: string, size: number): void {
     const ctx = this.ctx;
+    const viewport = this.getViewport();
     ctx.fillStyle = color;
 
     for (const pt of points) {
-      const canvasX = CENTER_X + pt.x * SCALE;
-      const canvasY = CENTER_Y - pt.y * SCALE;
+      const point = this.toCanvas({ x: pt[0], y: pt[1] }, viewport);
 
       ctx.beginPath();
-      ctx.arc(canvasX, canvasY, size, 0, 2 * Math.PI);
+      ctx.arc(point.x, point.y, size, 0, 2 * Math.PI);
       ctx.fill();
     }
   }
@@ -354,43 +489,109 @@ class LiDARMonitor {
     tangential_radius_m: number;
   }): void {
     const ctx = this.ctx;
-    const centerX = CENTER_X + gate.center_xy[0] * SCALE;
-    const centerY = CENTER_Y - gate.center_xy[1] * SCALE;
-    const radiusX = gate.radial_radius_m * SCALE;
-    const radiusY = gate.tangential_radius_m * SCALE;
+    const viewport = this.getViewport();
+    const center = this.toCanvas({ x: gate.center_xy[0], y: gate.center_xy[1] }, viewport);
+    const radiusX = gate.radial_radius_m * viewport.scale;
+    const radiusY = gate.tangential_radius_m * viewport.scale;
 
     ctx.strokeStyle = GATE_COLOR;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, 2 * Math.PI);
+    ctx.ellipse(center.x, center.y, radiusX, radiusY, 0, 0, 2 * Math.PI);
     ctx.stroke();
+  }
+
+  private drawTargetConnection(gate: {
+    kind: string;
+    center_xy: [number, number];
+    radial_radius_m: number;
+    tangential_radius_m: number;
+  }): void {
+    const ctx = this.ctx;
+    const [targetX, targetY] = gate.center_xy;
+    const viewport = this.getViewport();
+    const end = this.toCanvas({ x: targetX, y: targetY }, viewport);
+    const dx = end.x - viewport.centerX;
+    const dy = end.y - viewport.centerY;
+    const length = Math.hypot(dx, dy);
+
+    if (length < 1) {
+      return;
+    }
+
+    // Use the current tracking gate to size a stable, readable corridor.
+    const halfWidth = Math.max(12, Math.min(28, gate.tangential_radius_m * viewport.scale));
+    const heading = Math.atan2(dy, dx);
+
+    ctx.save();
+    ctx.translate(viewport.centerX, viewport.centerY);
+    ctx.rotate(heading);
+    ctx.fillStyle = CONNECTION_COLOR;
+    ctx.strokeStyle = CONNECTION_BORDER_COLOR;
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(0, -halfWidth, length, halfWidth * 2);
+    ctx.strokeRect(0, -halfWidth, length, halfWidth * 2);
+    ctx.restore();
+
+    ctx.fillStyle = TARGET_COLOR;
+    ctx.beginPath();
+    ctx.arc(end.x, end.y, 5, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+
+  private drawALXTrail(): void {
+    if (this.alxTrail.length < 2) {
+      return;
+    }
+
+    const ctx = this.ctx;
+    const viewport = this.getViewport();
+    ctx.save();
+    ctx.strokeStyle = "rgba(63, 185, 80, 0.55)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    this.alxTrail.forEach((point, index) => {
+      const canvasPoint = this.toCanvas(point, viewport);
+      if (index === 0) {
+        ctx.moveTo(canvasPoint.x, canvasPoint.y);
+      } else {
+        ctx.lineTo(canvasPoint.x, canvasPoint.y);
+      }
+    });
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawALX(body_xy: [number, number], synchronized: boolean): void {
     const ctx = this.ctx;
-    const canvasX = CENTER_X + body_xy[0] * SCALE;
-    const canvasY = CENTER_Y - body_xy[1] * SCALE;
+    const viewport = this.getViewport();
+    const point = this.toCanvas({ x: body_xy[0], y: body_xy[1] }, viewport);
 
     ctx.fillStyle = synchronized ? ALX_COLOR : "#d29922";
     ctx.beginPath();
-    ctx.arc(canvasX, canvasY, 6, 0, 2 * Math.PI);
+    ctx.arc(point.x, point.y, 6, 0, 2 * Math.PI);
     ctx.fill();
+
+    ctx.fillStyle = synchronized ? ALX_COLOR : "#d29922";
+    ctx.font = "11px monospace";
+    ctx.fillText(`ALX (${body_xy[0].toFixed(2)}, ${body_xy[1].toFixed(2)})`, point.x + 9, point.y - 9);
   }
 
   private drawClick(target: Point2D): void {
     const ctx = this.ctx;
-    const canvasX = CENTER_X + target.x * SCALE;
-    const canvasY = CENTER_Y - target.y * SCALE;
+    const viewport = this.getViewport();
+    const point = this.toCanvas(target, viewport);
 
     // Crosshair
     ctx.strokeStyle = TARGET_COLOR;
     ctx.lineWidth = 1;
 
     ctx.beginPath();
-    ctx.moveTo(canvasX - 8, canvasY);
-    ctx.lineTo(canvasX + 8, canvasY);
-    ctx.moveTo(canvasX, canvasY - 8);
-    ctx.lineTo(canvasX, canvasY + 8);
+    ctx.moveTo(point.x - 8, point.y);
+    ctx.lineTo(point.x + 8, point.y);
+    ctx.moveTo(point.x, point.y - 8);
+    ctx.lineTo(point.x, point.y + 8);
     ctx.stroke();
   }
 
