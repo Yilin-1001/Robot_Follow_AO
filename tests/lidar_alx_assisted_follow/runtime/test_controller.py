@@ -406,6 +406,68 @@ def test_runtime_logs_the_slew_limited_command_not_the_apf_request():
     assert csv_logger.log_strategy.call_args.kwargs["dispatched_vx"] == pytest.approx(0.0015)
 
 
+def test_runtime_passes_filtered_center_only_to_apf():
+    """APF receives the smoother output while target tracking remains raw."""
+    config = PrototypeConfig()
+    lifecycle = WristbandLifecycleGuardian(config.sensors.ready_timeout_s)
+    lifecycle._state = LifecycleState.SENSORS_READY
+    lifecycle._session_tag_id = 1
+    alx = ALXSnapshot(9.99, 1.5, 0.0, 0.0, 1, False)
+    alx_buffer = ALXSnapshotBuffer(config.alx, config.calibration)
+    alx_buffer.append(alx, now=10.0)
+    runtime = LidarALXAssistedFollowRuntime(
+        config=config,
+        cloud_source=Mock(),
+        alx_reader=Mock(),
+        alx_buffer=alx_buffer,
+        lifecycle=lifecycle,
+        radar_services=Mock(),
+        target_manager=TargetLockManager(config.target),
+        stop_latch=StopLatch(control_thread_id=0),
+        event_inbox=ControlEventInbox(),
+        latest_status=LatestStatus(),
+        limiter=CommandSlewRateLimiter(config.output_motion),
+        bridge=Mock(),
+        csv_logger=Mock(),
+    )
+    first_points = np.array(
+        [[1.46 + 0.01 * index, 0.0, -0.80 + 0.08 * index]
+         for index in range(8)],
+        dtype=np.float64,
+    )
+    first_cloud = PreprocessedCloud(
+        points_xyz=first_points,
+        source_indices=np.arange(len(first_points), dtype=np.int64),
+    )
+    second_cloud = PreprocessedCloud(
+        points_xyz=first_points + np.array([0.10, 0.0, 0.0]),
+        source_indices=np.arange(len(first_points), dtype=np.int64),
+    )
+    apf_intent = make_motion_intent(sequence=2, vx=0.10, reason="follow")
+    apf_inputs = []
+
+    def record_apf(input_data, _apf_config, _motion_config):
+        apf_inputs.append(input_data)
+        return APFResult(intent=apf_intent, stop_reason=None)
+
+    runtime._pending_click_xy = (1.5, 0.0)
+    with patch(
+        "robot_follow.lidar_alx_assisted_follow.runtime.controller.preprocess_tracking_cloud",
+        side_effect=[first_cloud, second_cloud],
+    ), patch(
+        "robot_follow.lidar_alx_assisted_follow.runtime.controller.compute_apf",
+        side_effect=record_apf,
+    ):
+        runtime._process_cloud(make_cloud_snapshot(1, 9.99), alx, now=10.0)
+        runtime._process_cloud(make_cloud_snapshot(2, 10.09), alx, now=10.1)
+
+    raw_center = runtime.target_manager.center_xy
+    assert raw_center is not None
+    assert len(apf_inputs) == 2
+    assert apf_inputs[-1].target_center_xy == runtime.target_manager.follow_center_xy
+    assert apf_inputs[-1].target_center_xy[0] < raw_center[0]
+
+
 # ============================================================================
 # Test: Sequence tracking
 # ============================================================================

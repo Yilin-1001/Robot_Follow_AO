@@ -166,6 +166,9 @@ class TargetConfig:
     max_radial_mad_m: float = 0.18
     max_center_displacement_m: float = 0.35
     max_frame_interval_s: float = 0.20
+    kalman_enabled: bool = True
+    kalman_process_noise: float = 0.10
+    kalman_measurement_noise: float = 0.05
     lost_timeout_s: float = 0.75
     desired_distance_m: float = 1.00
     stop_distance_m: float = 0.80
@@ -198,6 +201,10 @@ class TargetConfig:
         _validate_positive(self.max_radial_mad_m, "target.max_radial_mad_m")
         _validate_positive(self.max_center_displacement_m, "target.max_center_displacement_m")
         _validate_positive(self.max_frame_interval_s, "target.max_frame_interval_s")
+        if not isinstance(self.kalman_enabled, bool):
+            raise ValueError("target.kalman_enabled must be a boolean")
+        _validate_positive(self.kalman_process_noise, "target.kalman_process_noise")
+        _validate_positive(self.kalman_measurement_noise, "target.kalman_measurement_noise")
         _validate_positive(self.lost_timeout_s, "target.lost_timeout_s")
         _validate_positive(self.desired_distance_m, "target.desired_distance_m")
         _validate_positive(self.stop_distance_m, "target.stop_distance_m")

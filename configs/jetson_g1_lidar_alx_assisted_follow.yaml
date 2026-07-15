@@ -58,6 +58,9 @@ lidar_alx_assisted_follow:
     max_radial_mad_m: 0.18
     max_center_displacement_m: 0.35
     max_frame_interval_s: 0.20
+    kalman_enabled: true
+    kalman_process_noise: 0.10
+    kalman_measurement_noise: 0.05
     lost_timeout_s: 0.75
     desired_distance_m: 1.00
     stop_distance_m: 0.80
