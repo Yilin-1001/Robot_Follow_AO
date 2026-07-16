@@ -38,10 +38,10 @@ ao_radar:
     max_angle_jump_deg: 45.0
   # G1 实际输出限幅；即使 follow 输出更大，也会在此被截断。
   g1:
-    max_vx: 3.0
+    max_vx: 0.9
     # AO 侧移避障输出的实体 G1 横向速度上限。
-    max_vy: 0.30
-    max_omega: 3.0
+    max_vy: 0.45
+    max_omega: 1.0
     yaw_sign: 1
     sdk_timeout_s: 10.0
     sdk_timeout_code: 3104
