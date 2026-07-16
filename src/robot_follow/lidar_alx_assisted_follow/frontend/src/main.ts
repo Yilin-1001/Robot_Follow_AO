@@ -86,9 +86,9 @@ const ALX_COLOR = "#3fb950";
 const GATE_COLOR = "#bc8cff";
 const CONNECTION_COLOR = "rgba(158, 204, 59, 0.18)";
 const CONNECTION_BORDER_COLOR = "rgba(158, 204, 59, 0.82)";
-// Keep a stable, robot-centric view.  Fitting to each individual LiDAR scan
-// makes the display pulse whenever the scan boundary changes.
-const VIEW_SCALE = 80; // pixels per meter
+const MAX_SCALE = 80; // pixels per meter
+const MIN_SCALE = 28;
+const VIEWPORT_PADDING_PX = 28;
 const MAX_ALX_TRAIL_POINTS = 40;
 
 interface Viewport {
@@ -289,54 +289,53 @@ class LiDARMonitor {
   }
 
   private render(): void {
+    this.resizeCanvas();
+
     const ctx = this.ctx;
     const width = this.canvas.width;
     const height = this.canvas.height;
-    // Resolve this once: a frame must use one consistent transform, and
-    // calculating the point-cloud bounds repeatedly is expensive.
-    const viewport = this.getViewport();
 
     // Clear
     ctx.fillStyle = "#0b0e14";
     ctx.fillRect(0, 0, width, height);
 
     // Draw grid
-    this.drawGrid(viewport);
+    this.drawGrid();
 
     // Draw the recent ALX path before the point cloud so its current position
     // remains easy to identify even in a dense scan.
-    this.drawALXTrail(viewport);
+    this.drawALXTrail();
 
     // Draw points
     if (this.latestFrame) {
-      this.drawPoints(this.latestFrame.points, POINT_COLOR, 1, viewport);
-      this.drawPoints(this.latestFrame.target_points || [], TARGET_COLOR, 2, viewport);
+      this.drawPoints(this.latestFrame.points, POINT_COLOR, 1);
+      this.drawPoints(this.latestFrame.target_points || [], TARGET_COLOR, 2);
 
       // A target is drawn from the validated lock center, not directly from
       // the browser click.  This makes the visual link match the target that
       // the control loop is actually tracking.
       if (this.latestFrame.target_gate && this.hasActiveTarget()) {
-        this.drawTargetConnection(this.latestFrame.target_gate, viewport);
+        this.drawTargetConnection(this.latestFrame.target_gate);
       }
 
       // Draw gate ellipse
       if (this.latestFrame.target_gate) {
-        this.drawGate(this.latestFrame.target_gate, viewport);
+        this.drawGate(this.latestFrame.target_gate);
       }
 
       // Draw ALX position
       if (this.latestFrame.alx && this.latestFrame.alx.body_xy) {
-        this.drawALX(this.latestFrame.alx.body_xy, this.latestFrame.alx.synchronized, viewport);
+        this.drawALX(this.latestFrame.alx.body_xy, this.latestFrame.alx.synchronized);
       }
     }
 
     // Keep the robot marker above point-cloud data.  Canvas up is the
     // robot-facing direction in this monitor, matching the AO web viewer.
-    this.drawRobotHeading(viewport);
+    this.drawRobotHeading();
 
     // Draw selected target click position
     if (this.selectedTarget) {
-      this.drawClick(this.selectedTarget, viewport);
+      this.drawClick(this.selectedTarget);
     }
   }
 
@@ -378,7 +377,66 @@ class LiDARMonitor {
   private getViewport(): Viewport {
     const centerX = this.canvas.width / 2;
     const centerY = this.canvas.height / 2;
-    return { centerX, centerY, scale: VIEW_SCALE };
+    const scale = this.getVisibleScale();
+    return { centerX, centerY, scale };
+  }
+
+  private getVisibleScale(): number {
+    const bounds = this.getVisibleBounds();
+    const availableWidth = Math.max(1, this.canvas.width - VIEWPORT_PADDING_PX * 2);
+    const availableHeight = Math.max(1, this.canvas.height - VIEWPORT_PADDING_PX * 2);
+    const spanX = Math.max(1, Math.max(Math.abs(bounds.minX), Math.abs(bounds.maxX)) * 2);
+    const spanY = Math.max(1, Math.max(Math.abs(bounds.minY), Math.abs(bounds.maxY)) * 2);
+    const fitScale = Math.min(availableWidth / spanX, availableHeight / spanY);
+
+    return Math.max(MIN_SCALE, Math.min(MAX_SCALE, fitScale));
+  }
+
+  private getVisibleBounds(): {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+  } {
+    const bounds = { minX: -2, maxX: 2, minY: -2, maxY: 2 };
+    const include = (x: number, y: number): void => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return;
+      }
+      bounds.minX = Math.min(bounds.minX, x);
+      bounds.maxX = Math.max(bounds.maxX, x);
+      bounds.minY = Math.min(bounds.minY, y);
+      bounds.maxY = Math.max(bounds.maxY, y);
+    };
+
+    if (this.latestFrame) {
+      for (const point of this.latestFrame.points) {
+        include(point[0], point[1]);
+      }
+      for (const point of this.latestFrame.target_points || []) {
+        include(point[0], point[1]);
+      }
+
+      const gate = this.latestFrame.target_gate;
+      if (gate) {
+        include(gate.center_xy[0] - gate.radial_radius_m, gate.center_xy[1] - gate.tangential_radius_m);
+        include(gate.center_xy[0] + gate.radial_radius_m, gate.center_xy[1] + gate.tangential_radius_m);
+      }
+
+      const alx = this.latestFrame.alx?.body_xy;
+      if (alx) {
+        include(alx[0], alx[1]);
+      }
+    }
+
+    for (const point of this.alxTrail) {
+      include(point.x, point.y);
+    }
+    if (this.selectedTarget) {
+      include(this.selectedTarget.x, this.selectedTarget.y);
+    }
+
+    return bounds;
   }
 
   private toCanvas(point: Point2D, viewport: Viewport): Point2D {
@@ -390,8 +448,9 @@ class LiDARMonitor {
     };
   }
 
-  private drawGrid(viewport: Viewport): void {
+  private drawGrid(): void {
     const ctx = this.ctx;
+    const viewport = this.getViewport();
     ctx.strokeStyle = GRID_COLOR;
     ctx.lineWidth = 1;
 
@@ -414,8 +473,9 @@ class LiDARMonitor {
 
   }
 
-  private drawRobotHeading(viewport: Viewport): void {
+  private drawRobotHeading(): void {
     const ctx = this.ctx;
+    const viewport = this.getViewport();
 
     // A compact upward arrow: its tip denotes the robot's forward direction.
     // The geometry intentionally stays pixel-sized so it remains legible as
@@ -439,16 +499,18 @@ class LiDARMonitor {
     ctx.restore();
   }
 
-  private drawPoints(points: Point3D[], color: string, size: number, viewport: Viewport): void {
+  private drawPoints(points: Point3D[], color: string, size: number): void {
     const ctx = this.ctx;
+    const viewport = this.getViewport();
     ctx.fillStyle = color;
-    ctx.beginPath();
 
     for (const pt of points) {
       const point = this.toCanvas({ x: pt[0], y: pt[1] }, viewport);
+
+      ctx.beginPath();
       ctx.arc(point.x, point.y, size, 0, 2 * Math.PI);
+      ctx.fill();
     }
-    ctx.fill();
   }
 
   private drawGate(gate: {
@@ -456,8 +518,9 @@ class LiDARMonitor {
     center_xy: [number, number];
     radial_radius_m: number;
     tangential_radius_m: number;
-  }, viewport: Viewport): void {
+  }): void {
     const ctx = this.ctx;
+    const viewport = this.getViewport();
     const center = this.toCanvas({ x: gate.center_xy[0], y: gate.center_xy[1] }, viewport);
     // Body radial direction is x (vertical on screen); tangential is y
     // (horizontal on screen), so canvas ellipse radii are intentionally
@@ -477,9 +540,10 @@ class LiDARMonitor {
     center_xy: [number, number];
     radial_radius_m: number;
     tangential_radius_m: number;
-  }, viewport: Viewport): void {
+  }): void {
     const ctx = this.ctx;
     const [targetX, targetY] = gate.center_xy;
+    const viewport = this.getViewport();
     const end = this.toCanvas({ x: targetX, y: targetY }, viewport);
     const dx = end.x - viewport.centerX;
     const dy = end.y - viewport.centerY;
@@ -509,12 +573,13 @@ class LiDARMonitor {
     ctx.fill();
   }
 
-  private drawALXTrail(viewport: Viewport): void {
+  private drawALXTrail(): void {
     if (this.alxTrail.length < 2) {
       return;
     }
 
     const ctx = this.ctx;
+    const viewport = this.getViewport();
     ctx.save();
     ctx.strokeStyle = "rgba(63, 185, 80, 0.55)";
     ctx.lineWidth = 2;
@@ -532,8 +597,9 @@ class LiDARMonitor {
     ctx.restore();
   }
 
-  private drawALX(body_xy: [number, number], synchronized: boolean, viewport: Viewport): void {
+  private drawALX(body_xy: [number, number], synchronized: boolean): void {
     const ctx = this.ctx;
+    const viewport = this.getViewport();
     const point = this.toCanvas({ x: body_xy[0], y: body_xy[1] }, viewport);
 
     ctx.fillStyle = synchronized ? ALX_COLOR : "#d29922";
@@ -546,8 +612,9 @@ class LiDARMonitor {
     ctx.fillText(`ALX (${body_xy[0].toFixed(2)}, ${body_xy[1].toFixed(2)})`, point.x + 9, point.y - 9);
   }
 
-  private drawClick(target: Point2D, viewport: Viewport): void {
+  private drawClick(target: Point2D): void {
     const ctx = this.ctx;
+    const viewport = this.getViewport();
     const point = this.toCanvas(target, viewport);
 
     // Crosshair

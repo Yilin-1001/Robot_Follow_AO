@@ -137,9 +137,7 @@ lidar_alx_assisted_follow:
     max_message_bytes: 4096
     max_events_per_second: 20.0
     status_hz: 10.0
-    # Visualization-only cap; keeping this modest prevents browser Canvas and
-    # LAN WebSocket traffic from competing with the control loop.
-    max_visualization_points: 2000
+    max_visualization_points: 5000
 
   logging:
     enabled: true
