@@ -28,13 +28,13 @@ from robot_follow.lidar_alx_assisted_follow.tracking.target import TargetLockMan
 
 
 def test_hard_stop_still_publishes_preprocessed_cloud_for_web():
-    """A controller-disconnect stop must not blank the LiDAR monitor."""
+    """A hard safety stop must not blank the LiDAR monitor."""
     config = PrototypeConfig()
     lifecycle = WristbandLifecycleGuardian(config.sensors.ready_timeout_s)
     lifecycle._state = LifecycleState.SENSORS_READY
     latest_status = LatestStatus()
     stop_latch = StopLatch(control_thread_id=0)
-    stop_latch.request("controller_disconnected", StopKind.HARD)
+    stop_latch.request("user_stop", StopKind.HARD)
     runtime = LidarALXAssistedFollowRuntime(
         config=config,
         cloud_source=Mock(),
@@ -72,7 +72,7 @@ def test_hard_stop_still_publishes_preprocessed_cloud_for_web():
     _, status = latest_status.snapshot()
     preprocess.assert_called_once()
     assert status["points"] == points.tolist()
-    assert status["stop"]["reason"] == "controller_disconnected"
+    assert status["stop"]["reason"] == "user_stop"
 
 
 def test_no_target_still_publishes_preprocessed_cloud_for_web():
@@ -117,4 +117,5 @@ def test_no_target_still_publishes_preprocessed_cloud_for_web():
 
     _, status = latest_status.snapshot()
     assert status["points"] == points.tolist()
-    assert status["stop"]["reason"] == "alx_stale"
+    assert status["stop"]["requested"] is False
+    assert status["stop"]["strategy_reason"] == "alx_stale"

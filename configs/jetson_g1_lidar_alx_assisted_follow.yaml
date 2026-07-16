@@ -95,16 +95,6 @@ lidar_alx_assisted_follow:
     alx_height_m: 1.10
     allow_provisional_calibration_for_prototype: true
 
-  confidence:
-    weight_temporal: 0.35
-    weight_geometry: 0.30
-    weight_alx: 0.35
-    alx_body_to_wrist_tolerance_m: 0.80
-    no_observation_baseline: 0.0
-    start: 0.80
-    stop: 0.70
-    unlock: 0.45
-
   apf:
     target_desired_distance_m: 1.00
     target_stop_distance_m: 0.80
@@ -123,15 +113,19 @@ lidar_alx_assisted_follow:
     omega_gain: 0.80
 
   output_motion:
-    max_vx: 0.10
-    max_abs_vy: 0.08
-    max_abs_omega: 0.25
-    accel_vx: 0.15
-    decel_vx: 0.30
-    accel_vy: 0.15
-    decel_vy: 0.30
-    accel_omega: 0.50
-    decel_omega: 1.00
+    # Mock dry-run profile: make the ALX-follow/APF command clearly visible
+    # on the web panel. ``output.mode`` above remains mock, so these commands
+    # are recorded only and never sent to the G1 SDK.
+    # Keep the separate g1.* limits unchanged for a later real-robot trial.
+    max_vx: 0.40
+    max_abs_vy: 0.20
+    max_abs_omega: 0.80
+    accel_vx: 0.50
+    decel_vx: 0.80
+    accel_vy: 0.40
+    decel_vy: 0.80
+    accel_omega: 1.50
+    decel_omega: 2.00
 
   web:
     host: 127.0.0.1

@@ -103,9 +103,8 @@ def make_strategy_result(
 
 
 def arm_alx_target(runtime: LidarALXAssistedFollowRuntime) -> None:
-    """Put a runtime in the operator-authorized ALX-following state."""
-    runtime.target_manager.set_external_target((1.5, 0.0), now_s=9.99)
-    assert runtime.target_manager.start()
+    """Put a runtime in the Web-authorized direct-ALX following state."""
+    runtime._state.follow_enabled = True
 
 
 # ============================================================================

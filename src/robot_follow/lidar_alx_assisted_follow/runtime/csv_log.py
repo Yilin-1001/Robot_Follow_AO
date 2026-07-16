@@ -147,7 +147,7 @@ class PrototypeCSVLogger:
         target_center_x: float,
         target_center_y: float,
         target_support_count: int,
-        confidence: ConfidenceResult,
+        confidence: Optional[ConfidenceResult],
         stop_reason: Optional[str],
         apf_requested_vx: float,
         apf_requested_vy: float,
@@ -181,8 +181,8 @@ class PrototypeCSVLogger:
             Target center coordinates.
         target_support_count : int
             Number of support points.
-        confidence : ConfidenceResult
-            Confidence result.
+        confidence : ConfidenceResult or None
+            Legacy confidence record. The direct-ALX runtime passes None.
         stop_reason : str or None
             Stop reason (if any).
         apf_requested_vx, vy, omega : float
@@ -218,10 +218,10 @@ class PrototypeCSVLogger:
                 "target_center_x": self._format_value(target_center_x),
                 "target_center_y": self._format_value(target_center_y),
                 "target_support_count": self._format_value(target_support_count),
-                "c_t": self._format_value(confidence.c_t),
-                "c_g": self._format_value(confidence.c_g),
-                "c_a": self._format_value(confidence.c_a),
-                "confidence": self._format_value(confidence.total),
+                "c_t": self._format_value(None if confidence is None else confidence.c_t),
+                "c_g": self._format_value(None if confidence is None else confidence.c_g),
+                "c_a": self._format_value(None if confidence is None else confidence.c_a),
+                "confidence": self._format_value(None if confidence is None else confidence.total),
                 "stop_reason": self._format_value(stop_reason),
                 "apf_requested_vx": self._format_value(apf_requested_vx),
                 "apf_requested_vy": self._format_value(apf_requested_vy),

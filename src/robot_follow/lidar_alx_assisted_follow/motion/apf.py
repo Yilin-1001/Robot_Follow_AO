@@ -11,7 +11,6 @@ import numpy as np
 
 from robot_follow.lidar_alx_assisted_follow.config.schema import APFConfig, OutputConfig
 from robot_follow.lidar_alx_assisted_follow.domain.models import (
-    ConfidenceResult,
     MotionIntent,
     PreprocessedCloud,
     StopReason,
@@ -27,9 +26,11 @@ class APFInput:
     cloud: PreprocessedCloud
     target_center_xy: Tuple[float, float]
     target_mask: np.ndarray  # Boolean mask in downsampled domain
-    confidence: ConfidenceResult
     sequence: int
     alx_body_xy: Optional[np.ndarray] = None
+    # Transitional constructor compatibility for offline APF callers.  It is
+    # deliberately ignored: confidence is no longer an assisted-follow gate.
+    confidence: object | None = None
 
 
 @dataclass(frozen=True)
@@ -50,7 +51,7 @@ def compute_apf(
     Parameters
     ----------
     input_data : APFInput
-        Cloud, target, and confidence data.
+        Cloud and direct ALX target data.
     config : APFConfig
         APF configuration.
     output_config : OutputConfig
@@ -91,13 +92,6 @@ def compute_apf(
                 intent=_zero_intent(input_data.sequence),
                 stop_reason=StopReason.NON_TARGET_HARD_CLEARANCE,
             )
-
-    # Check 3: Confidence not in FOLLOWING state
-    if input_data.confidence.total < 0.70:  # confidence.stop threshold
-        return APFResult(
-            intent=_zero_intent(input_data.sequence),
-            stop_reason=StopReason.CONFIDENCE_LOW,
-        )
 
     # Compute attraction force
     r = target_distance

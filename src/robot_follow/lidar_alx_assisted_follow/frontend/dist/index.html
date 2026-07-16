@@ -4,15 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LiDAR + ALX Assisted Follow</title>
-  <script type="module" crossorigin src="./assets/index-5j7fR8fB.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-By6atghg.css">
+  <script type="module" crossorigin src="./assets/index-Cw9P9Jj1.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-CZRb67li.css">
 </head>
 <body>
   <div id="app">
     <header class="header">
       <h1 class="header-title">LiDAR Follow Monitor</h1>
       <div class="header-status">
-        <span id="role-display" class="role-badge">Connecting...</span>
+        <span id="connection-state" class="role-badge connecting">Connecting...</span>
       </div>
     </header>
 
@@ -27,34 +27,46 @@
       <section class="controls-section">
         <div class="status-grid">
           <div class="status-item">
-            <span class="status-label">Lifecycle</span>
-            <span id="lifecycle-state" class="status-value">WRISTBAND_OFF</span>
+            <span class="status-label">Follow</span>
+            <span id="follow-enabled" class="status-value">DISABLED</span>
           </div>
           <div class="status-item">
-            <span class="status-label">Lock State</span>
-            <span id="lock-state" class="status-value">IDLE</span>
+            <span class="status-label">Motion State</span>
+            <span id="motion-state" class="status-value">DISABLED</span>
           </div>
           <div class="status-item">
-            <span class="status-label">Confidence</span>
-            <span id="confidence-value" class="status-value">0.00</span>
+            <span class="status-label">Wristband</span>
+            <span id="wristband-state" class="status-value">UNKNOWN</span>
           </div>
           <div class="status-item">
-            <span class="status-label">Stop Reason</span>
+            <span class="status-label">Stop / block</span>
             <span id="stop-reason" class="status-value">None</span>
           </div>
         </div>
 
         <div class="command-display">
           <div class="command-item">
-            <span class="command-label">vx</span>
+            <span class="command-label">requested vx</span>
+            <span id="requested-vx" class="command-value">0.00</span>
+          </div>
+          <div class="command-item">
+            <span class="command-label">requested vy</span>
+            <span id="requested-vy" class="command-value">0.00</span>
+          </div>
+          <div class="command-item">
+            <span class="command-label">requested ω</span>
+            <span id="requested-omega" class="command-value">0.00</span>
+          </div>
+          <div class="command-item">
+            <span class="command-label">sent vx</span>
             <span id="dispatched-vx" class="command-value">0.00</span>
           </div>
           <div class="command-item">
-            <span class="command-label">vy</span>
+            <span class="command-label">sent vy</span>
             <span id="dispatched-vy" class="command-value">0.00</span>
           </div>
           <div class="command-item">
-            <span class="command-label">ω</span>
+            <span class="command-label">sent ω</span>
             <span id="dispatched-omega" class="command-value">0.00</span>
           </div>
         </div>

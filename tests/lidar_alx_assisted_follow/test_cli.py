@@ -103,7 +103,7 @@ lidar_alx_assisted_follow:
         components = build_runtime_from_args(args)
 
         runtime = components["runtime"]
-        assert runtime.target_manager.config == components["config"].target
+        assert runtime.target_manager is None
         assert runtime.limiter.config == components["config"].output_motion
         assert callable(runtime.run_control_loop)
 
@@ -164,7 +164,7 @@ lidar_alx_assisted_follow:
             ControlEvent(ControlEventKind.SELECT_TARGET, {"x": 1.2, "y": -0.3})
         )
 
-        assert components["runtime"].target_manager.center_xy is None
+        assert components["runtime"].target_manager is None
 
     def _make_args(
         self,

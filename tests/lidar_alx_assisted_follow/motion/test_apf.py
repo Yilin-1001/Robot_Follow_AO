@@ -322,11 +322,11 @@ class TestSweptEnvelope:
         assert _is_zero_intent(result.intent)
 
 
-class TestConfidenceLowStop:
-    """Test confidence low stop condition."""
+class TestConfidenceIsNotAMotionGate:
+    """ALX-assisted following never gates APF on a confidence score."""
 
-    def test_low_confidence_returns_zero(self):
-        """Confidence below stop threshold should stop."""
+    def test_low_legacy_confidence_does_not_stop(self):
+        """A retained legacy confidence field has no effect on APF."""
         config = APFConfig()
         output_config = OutputMotionConfig()
 
@@ -334,14 +334,13 @@ class TestConfidenceLowStop:
         points = np.array([[1.5, 0.0, 1.0]])
         target_mask = np.array([True])
 
-        # Confidence below 0.70 stop threshold
         low_confidence = make_confidence(total=0.50)
 
         input_data = make_apf_input(points, target_center, target_mask, low_confidence)
         result = compute_apf(input_data, config, output_config)
 
-        assert result.stop_reason == StopReason.CONFIDENCE_LOW
-        assert _is_zero_intent(result.intent)
+        assert result.stop_reason is None
+        assert result.intent.vx > 0.0
 
 
 class TestInvalidInput:

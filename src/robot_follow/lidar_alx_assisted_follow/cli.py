@@ -40,7 +40,6 @@ from robot_follow.lidar_alx_assisted_follow.sensors.alx_topic import (
     ALXPositionTopicSource,
 )
 from robot_follow.lidar_alx_assisted_follow.sensors.lifecycle import WristbandLifecycleGuardian
-from robot_follow.lidar_alx_assisted_follow.tracking.target import TargetLockManager
 from robot_follow.lidar_alx_assisted_follow.motion.limiter import CommandSlewRateLimiter
 from robot_follow.lidar_alx_assisted_follow.web.server import (
     WEB_SHUTDOWN_TIMEOUT_S,
@@ -364,9 +363,7 @@ def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
     radar_services = RadarServiceManager(build_radar_service_config(config))
     components["radar_services"] = radar_services
 
-    target_manager = TargetLockManager(config.target)
     limiter = CommandSlewRateLimiter(config.output_motion)
-    components["target_manager"] = target_manager
     components["limiter"] = limiter
 
     # Runtime
@@ -377,7 +374,7 @@ def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
         alx_buffer=alx_buffer,
         lifecycle=lifecycle,
         radar_services=radar_services,
-        target_manager=target_manager,
+        target_manager=None,
         stop_latch=stop_latch,
         event_inbox=event_inbox,
         latest_status=latest_status,

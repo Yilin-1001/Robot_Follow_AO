@@ -1,15 +1,14 @@
-"""Web server with controller lease and bounded broadcast."""
+"""Web server for Web-started assisted follow and bounded broadcast."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import math
 import time
 import weakref
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 from aiohttp import web
@@ -22,11 +21,7 @@ from robot_follow.lidar_alx_assisted_follow.runtime.state import (
     LatestStatus,
     StopLatch,
 )
-from robot_follow.lidar_alx_assisted_follow.web.protocol import (
-    ClientMessage,
-    MessageType,
-    parse_client_message,
-)
+from robot_follow.lidar_alx_assisted_follow.web.protocol import parse_client_message
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +33,6 @@ class ClientInfo:
     """Per-client connection state."""
 
     client_id: str
-    role: str  # "controller" or "observer"
     last_version: int = 0
     event_times: List[float] = field(default_factory=list)
 
@@ -72,9 +66,11 @@ class ClientInfo:
 
 
 class PrototypeWebHub:
-    """Controller lease manager and status broadcaster.
+    """Web control ingress and status broadcaster.
 
-    Thread-safe for concurrent access from WebSocket handlers.
+    Every connected Web client may request Start or Stop.  Connection state is
+    intentionally not a motion-safety input: losing a browser must never stop
+    an already enabled follow session.
     """
 
     def __init__(
@@ -93,42 +89,16 @@ class PrototypeWebHub:
 
         self._lock = asyncio.Lock()
         self._clients: Dict[str, ClientInfo] = {}
-        self._controller_id: Optional[str] = None
-        self._role_sent: Dict[str, bool] = {}
-
-    @property
-    def controller_id(self) -> Optional[str]:
-        """Get the current controller client ID."""
-        return self._controller_id
-
     @property
     def client_count(self) -> int:
         """Number of connected clients."""
         return len(self._clients)
 
-    def role_of(self, client_id: str) -> Optional[str]:
-        """Get the role of a connected client.
-
-        Parameters
-        ----------
-        client_id : str
-            Client ID to query.
-
-        Returns
-        -------
-        str or None
-            "controller", "observer", or None if unknown.
-        """
-        client = self._clients.get(client_id)
-        if client is None:
-            return None
-        return client.role
-
     async def connect(self, client_id: str) -> ClientInfo:
         """Register a new WebSocket connection.
 
-        First connection becomes controller; subsequent connections
-        become observers.  Rejects if at max_clients.
+        Rejects if ``max_clients`` is reached.  This is a monitoring/control
+        connection only; it has no lease or safety authority.
 
         Parameters
         ----------
@@ -138,7 +108,7 @@ class PrototypeWebHub:
         Returns
         -------
         ClientInfo
-            The new client's info with assigned role.
+            The new client's connection state.
 
         Raises
         ------
@@ -149,26 +119,16 @@ class PrototypeWebHub:
             if len(self._clients) >= self._max_clients:
                 raise ValueError(f"max_clients ({self._max_clients}) reached")
 
-            # Assign role: first connection is controller
-            if self._controller_id is None:
-                role = "controller"
-                self._controller_id = client_id
-            else:
-                role = "observer"
-
-            info = ClientInfo(client_id=client_id, role=role)
+            info = ClientInfo(client_id=client_id)
             self._clients[client_id] = info
-            self._role_sent[client_id] = False
-
             return info
 
     async def disconnect(self, client_id: str) -> None:
         """Handle WebSocket disconnection.
 
-        If the client is controller:
-        1. Request HARD stop on StopLatch
-        2. Enqueue CONTROLLER_DISCONNECT event
-        3. Clear controller lease
+        A browser disconnect only removes its monitoring connection.  The
+        runtime keeps ``follow_enabled`` unchanged; wristband and sensor
+        safety conditions remain the authoritative gates.
 
         Parameters
         ----------
@@ -176,26 +136,7 @@ class PrototypeWebHub:
             Disconnected client ID.
         """
         async with self._lock:
-            client = self._clients.pop(client_id, None)
-            self._role_sent.pop(client_id, None)
-
-            if client is None:
-                return
-
-            if client.role == "controller":
-                # Request HARD stop (any thread can call this)
-                self._stop_latch.request("controller_disconnected", StopKind.HARD)
-
-                # Enqueue disconnect event
-                self._event_inbox.push(
-                    ControlEvent(
-                        kind=ControlEventKind.CONTROLLER_DISCONNECT,
-                        payload={},
-                    )
-                )
-
-                # Clear lease
-                self._controller_id = None
+            self._clients.pop(client_id, None)
 
     async def handle_client_message(
         self,
@@ -205,8 +146,7 @@ class PrototypeWebHub:
     ) -> Dict[str, Any]:
         """Handle a parsed client message.
 
-        Observers receive read_only error.  Controllers have their
-        messages forwarded to the control event inbox.
+        Valid Start/Stop commands are forwarded to the runtime inbox.
 
         Parameters
         ----------
@@ -242,29 +182,15 @@ class PrototypeWebHub:
                     },
                 }
 
-            # Observer cannot control
-            if client.role == "observer" and message_type in (
-                "select_target",
-                "start_follow",
-                "stop_follow",
-            ):
+            # Process control messages
+            if message_type == "select_target":
                 return {
                     "type": "error",
                     "payload": {
-                        "code": "read_only",
-                        "message": "observer cannot control",
+                        "code": "unsupported_control",
+                        "message": "ALX is the only follow target",
                     },
                 }
-
-            # Process control messages
-            if message_type == "select_target":
-                self._event_inbox.push(
-                    ControlEvent(
-                        kind=ControlEventKind.SELECT_TARGET,
-                        payload=payload,
-                    )
-                )
-                return {"type": "ack"}
 
             elif message_type == "start_follow":
                 self._event_inbox.push(
@@ -324,33 +250,6 @@ class PrototypeWebHub:
                 **status,
             },
         }
-
-    async def get_role_message(self, client_id: str) -> Optional[Dict[str, Any]]:
-        """Get role message for a client, only if not yet sent.
-
-        Parameters
-        ----------
-        client_id : str
-            Client ID.
-
-        Returns
-        -------
-        dict or None
-            Role message or None if already sent.
-        """
-        async with self._lock:
-            if self._role_sent.get(client_id, True):
-                return None
-
-            client = self._clients.get(client_id)
-            if client is None:
-                return None
-
-            self._role_sent[client_id] = True
-            return {
-                "type": "role",
-                "payload": {"role": client.role},
-            }
 
     async def broadcast_excluding(
         self, message: Dict[str, Any], exclude_id: Optional[str] = None
@@ -435,7 +334,7 @@ async def _handle_index(request: web.Request) -> web.StreamResponse:
 async def _handle_websocket(request: web.Request) -> web.WebSocketResponse:
     """Handle WebSocket connections.
 
-    Manages controller lease, message parsing, and status broadcast.
+    Manages Web commands, message parsing, and status broadcast.
     """
     ws = web.WebSocketResponse()
     await ws.prepare(request)
@@ -454,11 +353,6 @@ async def _handle_websocket(request: web.Request) -> web.WebSocketResponse:
         )
         await ws.close()
         return ws
-
-    # Send role
-    role_msg = await hub.get_role_message(client_id)
-    if role_msg is not None:
-        await ws.send_json(role_msg)
 
     # Start status broadcast task
     async def broadcast_status() -> None:

@@ -12,17 +12,19 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from typing import Deque, List, Optional, Protocol, Union
+from typing import Optional, Protocol, Union
 
 import numpy as np
 
 from robot_follow.lidar_alx_assisted_follow.config.schema import PrototypeConfig
 from robot_follow.lidar_alx_assisted_follow.domain.models import (
     CloudSnapshot,
-    ConfidenceResult,
     GatedTargetObservation,
+    MotionState,
     MotionIntent,
     PreprocessedCloud,
+    StartResult,
+    StartState,
     StopKind,
     StopReason,
     StopSnapshot,
@@ -57,11 +59,6 @@ from robot_follow.lidar_alx_assisted_follow.sensors.lifecycle import (
     WristbandLifecycleGuardian,
 )
 from robot_follow.lidar_alx_assisted_follow.tracking.preprocessing import preprocess_tracking_cloud
-from robot_follow.lidar_alx_assisted_follow.tracking.target import (
-    LockState,
-    TargetLockManager,
-    TargetLockSnapshot,
-)
 from robot_follow.ao.live.radar_service_manager import RadarServiceManager
 
 
@@ -97,10 +94,13 @@ class RuntimeState:
     # Strategy results for logging/status
     last_strategy_result: Optional[StrategyResult] = None
 
-    # Confidence result
-    last_confidence: Optional[ConfidenceResult] = None
+    # Web is the explicit software enable. It is deliberately independent of
+    # browser connection lifetime; sensor safety still gates every command.
+    follow_enabled: bool = False
+    last_start_result: StartResult = field(default_factory=StartResult)
 
-    # Target observation
+    # Legacy visualization field retained while the old tracking module is
+    # still available for offline tools. The ALX-follow runtime leaves it None.
     last_observation: Optional[GatedTargetObservation] = None
 
     # Cloud age
@@ -134,8 +134,8 @@ class LidarALXAssistedFollowRuntime:
 
     Safety:
     - StopLatch: any thread can request stop, only control thread can clear
-    - HARD stops: user_stop, controller_disconnected, wristband_off, etc.
-    - SOFT stops: confidence_low, alx_stale (can auto-recover)
+    - HARD stops: user_stop, wristband_off, serial_error, cloud_stale, etc.
+    - WebSocket connection lifetime is not a safety input.
     """
 
     config: PrototypeConfig
@@ -144,7 +144,10 @@ class LidarALXAssistedFollowRuntime:
     alx_buffer: Union[ALXSnapshotBuffer, ALXPositionBuffer]
     lifecycle: WristbandLifecycleGuardian
     radar_services: RadarServiceManager
-    target_manager: TargetLockManager
+    # Kept as an optional compatibility injection while the unused legacy
+    # point-cloud target-tracking module is retired. Runtime motion never
+    # reads it: ALX is the only follow target.
+    target_manager: object | None
     stop_latch: StopLatch
     event_inbox: ControlEventInbox
     latest_status: LatestStatus
@@ -238,7 +241,7 @@ class LidarALXAssistedFollowRuntime:
     def _drain_control_events(self) -> None:
         """Drain all pending control events.
 
-        Process select_target, start_follow, stop_follow, controller_disconnect.
+        Process the explicit Web follow enable/disable requests.
         """
         while not self.event_inbox.empty:
             event = self.event_inbox.pop()
@@ -256,7 +259,8 @@ class LidarALXAssistedFollowRuntime:
             Control event from Web.
         """
         if event.kind == ControlEventKind.SELECT_TARGET:
-            # ALX is the follow target. Browser clicks never retarget motion.
+            # ALX is the sole follow target. Keep this event harmless while
+            # older browser clients are phased out.
             return
 
         elif event.kind == ControlEventKind.START_FOLLOW:
@@ -266,52 +270,66 @@ class LidarALXAssistedFollowRuntime:
             self._handle_start_follow()
 
         elif event.kind == ControlEventKind.STOP_FOLLOW:
-            # Stop following
-            # Request HARD stop, preserve target
+            self._state.follow_enabled = False
+            self._state.last_start_result = StartResult(
+                state=StartState.IDLE,
+                reason="user_stop",
+                timestamp_s=time.monotonic(),
+            )
             self.stop_latch.request("user_stop", StopKind.HARD)
-            self.target_manager.stop_follow()
 
         elif event.kind == ControlEventKind.CONTROLLER_DISCONNECT:
-            # Controller disconnected
-            # Request HARD stop, unlock
-            self.stop_latch.request("controller_disconnected", StopKind.HARD)
-            self.target_manager.unlock()
+            # Compatibility no-op. WebSocket lifetime must never revoke the
+            # server-side follow enable selected by a Web Start request.
+            return
 
     def _handle_start_follow(self) -> None:
         """Handle start_follow command.
 
-        Requirements:
-        - Valid ALX-derived candidate target
-        - Controller ownership
-        - SENSORS_READY lifecycle
-        - Fresh synchronized ALX
-        - C >= 0.80
+        The request is accepted only when the physical gate and current
+        ALX/cloud pair are already valid. This prevents a Start click during
+        sensor startup from arming a later, unattended motion transition.
         """
-        # Check target state
-        target_snapshot = self.target_manager.snapshot()
-        if target_snapshot.state != LockState.CANDIDATE:
+        now = time.monotonic()
+        reason = self._start_rejection_reason(now)
+        if reason is not None:
+            self._state.last_start_result = StartResult(
+                state=StartState.REJECTED,
+                reason=reason,
+                timestamp_s=now,
+            )
             return
 
-        # Check lifecycle
-        if self.lifecycle.state != LifecycleState.SENSORS_READY:
-            return
-
-        # Check ALX fresh
-        if self._state.last_confidence is None or not self._state.last_confidence.alx_fresh:
-            return
-
-        # Check confidence
-        if self._state.last_confidence.total < self.config.confidence.start:
-            return
-
-        # Clear latch and start following
         if self._state.last_strategy_result is not None:
             start_after_sequence = self._state.last_strategy_result.sequence
         else:
             start_after_sequence = self._state.last_processed_sequence
 
         self.stop_latch.clear_for_start(start_after_sequence)
-        self.target_manager.start()
+        self._state.follow_enabled = True
+        self._state.last_start_result = StartResult(
+            state=StartState.ACCEPTED,
+            reason=None,
+            timestamp_s=now,
+        )
+
+    def _start_rejection_reason(self, now: float) -> Optional[str]:
+        """Return the unmet physical precondition for a Web Start request."""
+        wristband = self.alx_reader.wristband_status()
+        if not self.alx_reader.is_wristband_status_fresh(now):
+            return "wristband_stale"
+        if wristband.state != WristbandTopicState.ON:
+            return "wristband_off"
+        if self.lifecycle.state != LifecycleState.SENSORS_READY:
+            return "lidar_not_ready"
+        if self._state.last_cloud_received_at_s is None or (
+            now - self._state.last_cloud_received_at_s
+            > self.config.sensors.max_cloud_age_s
+        ):
+            return "cloud_stale"
+        if not self._state.last_alx_synchronized:
+            return "alx_unsynchronized"
+        return None
 
     def _sample_alx(
         self,
@@ -358,6 +376,11 @@ class LidarALXAssistedFollowRuntime:
         # tag ID 0 preserves the existing single-tag topic-mode session model.
         wristband_status = self.alx_reader.wristband_status()
         status_fresh = self.alx_reader.is_wristband_status_fresh(now)
+        # At process startup the ROS subscription needs a short interval to
+        # receive its first retained/heartbeat state.  A missing *first*
+        # state is not evidence of a serial fault; once a status has arrived,
+        # however, a stale or invalid heartbeat must still fail closed.
+        status_received = wristband_status.received_at is not None
         control_state = (
             wristband_status.state
             if status_fresh
@@ -404,7 +427,7 @@ class LidarALXAssistedFollowRuntime:
             elif control_state in (
                 WristbandTopicState.UNKNOWN,
                 WristbandTopicState.SERIAL_FAULT,
-            ):
+            ) and status_received:
                 forced_stop_reason = StopReason.SERIAL_ERROR.value
 
         if should_stop_services or forced_stop_reason is not None:
@@ -420,10 +443,10 @@ class LidarALXAssistedFollowRuntime:
                 else:
                     stop_reason = StopReason.SERIAL_ERROR.value
                 self.stop_latch.request(stop_reason, StopKind.HARD)
-                self.target_manager.unlock()
+                self._disable_follow_for_safety(stop_reason)
             elif forced_stop_reason is not None:
                 self.stop_latch.request(forced_stop_reason, StopKind.HARD)
-                self.target_manager.unlock()
+                self._disable_follow_for_safety(forced_stop_reason)
 
         if new_state == LifecycleState.SENSORS_READY and not self._bridge_initialized:
             try:
@@ -431,6 +454,16 @@ class LidarALXAssistedFollowRuntime:
                 self._bridge_initialized = True
             except Exception:
                 self.stop_latch.request("bridge_fault", StopKind.HARD)
+                self._disable_follow_for_safety("bridge_fault")
+
+    def _disable_follow_for_safety(self, reason: str) -> None:
+        """Revoke Web enable after a hard physical safety condition."""
+        self._state.follow_enabled = False
+        self._state.last_start_result = StartResult(
+            state=StartState.IDLE,
+            reason=reason,
+            timestamp_s=time.monotonic(),
+        )
 
     def _match_alx_for_cloud(
         self,
@@ -508,6 +541,7 @@ class LidarALXAssistedFollowRuntime:
         # Check cloud staleness
         if cloud_age_s > self.config.sensors.max_cloud_age_s:
             self.stop_latch.request("cloud_stale", StopKind.HARD)
+            self._disable_follow_for_safety("cloud_stale")
             self._log_strategy_zero(cloud, "cloud_stale", now)
             return
 
@@ -527,9 +561,9 @@ class LidarALXAssistedFollowRuntime:
             self.config.calibration,
         )
 
-        # A hard stop blocks all tracking and motion work, but the Web monitor
-        # must retain the current LiDAR view so an operator can diagnose and
-        # explicitly restart from an informed state.
+        # A hard stop blocks all motion work, but the Web monitor retains the
+        # current LiDAR view so the operator can diagnose and explicitly
+        # re-enable following from an informed state.
         latch_snapshot = self.stop_latch.snapshot()
         if latch_snapshot.requested and latch_snapshot.kind == StopKind.HARD:
             reason = latch_snapshot.reason or "stop"
@@ -539,48 +573,18 @@ class LidarALXAssistedFollowRuntime:
         compute_start = time.monotonic()
 
         # The matched ALX sample is the follow target. LiDAR remains an
-        # obstacle source: this pass neither selects nor tracks a person from
-        # the cloud, and it runs only because this cloud is new.
+        # obstacle source: this pass never selects or tracks a person from the
+        # cloud.
         if not alx_fresh or alx_body_xy is None:
-            self.stop_latch.request("alx_stale", StopKind.SOFT)
-            self._state.last_confidence = ConfidenceResult(
-                c_t=0.0, c_g=0.0, c_a=0.0, total=0.0,
-                alx_fresh=False, reason="alx_stale",
-            )
-            self._state.last_observation = None
+            if self._state.follow_enabled:
+                self.stop_latch.request("alx_stale", StopKind.HARD)
+                self._disable_follow_for_safety("alx_stale")
             self._log_strategy_zero(cloud, "alx_stale", now, preprocessed)
             return
 
-        self.target_manager.set_external_target(
-            (float(alx_body_xy[0]), float(alx_body_xy[1])), now,
-        )
-        target_snapshot = self.target_manager.snapshot()
-        follow_center_xy = self.target_manager.follow_center_xy
         self._state.last_observation = None
-        confidence = ConfidenceResult(
-            c_t=1.0, c_g=1.0, c_a=1.0, total=1.0,
-            alx_fresh=True, reason="alx_target_matched",
-        )
-        self._state.last_confidence = confidence
-
-        latch_snapshot = self.stop_latch.snapshot()
-        if (
-            latch_snapshot.requested
-            and latch_snapshot.kind == StopKind.SOFT
-            and latch_snapshot.reason == StopReason.ALX_STALE.value
-        ):
-            self.stop_latch.clear_soft_recovery()
-
-        if target_snapshot.center_xy is None or follow_center_xy is None:
-            self._log_strategy_zero(cloud, "alx_stale", now, preprocessed)
-            return
-
-        # A new ALX position creates a candidate, never autonomous motion.
-        # The operator must still send Start; until then each cloud pass keeps
-        # the bridge at zero velocity.
-        if target_snapshot.state != LockState.FOLLOWING:
-            self.stop_latch.request("motion_not_allowed", StopKind.SOFT)
-            self._log_strategy_zero(cloud, "motion_not_allowed", now, preprocessed)
+        if not self._state.follow_enabled:
+            self._log_strategy_zero(cloud, "follow_disabled", now, preprocessed)
             return
 
         target_mask = self._alx_target_mask(preprocessed, alx_body_xy)
@@ -588,9 +592,8 @@ class LidarALXAssistedFollowRuntime:
         # Run APF
         apf_input = APFInput(
             cloud=preprocessed,
-            target_center_xy=follow_center_xy,
+            target_center_xy=(float(alx_body_xy[0]), float(alx_body_xy[1])),
             target_mask=target_mask,
-            confidence=confidence,
             sequence=cloud.sequence,
             alx_body_xy=alx_body_xy,
         )
@@ -675,11 +678,11 @@ class LidarALXAssistedFollowRuntime:
             cloud_age_ms=self._state.last_cloud_age_ms,
             alx_age_ms=self._state.last_alx_age_ms,
             lifecycle_state=self.lifecycle.state.value,
-            lock_state=target_snapshot.state.value,
-            target_center_x=target_snapshot.center_xy[0] if target_snapshot.center_xy else float("nan"),
-            target_center_y=target_snapshot.center_xy[1] if target_snapshot.center_xy else float("nan"),
+            lock_state="alx_direct",
+            target_center_x=float(alx_body_xy[0]),
+            target_center_y=float(alx_body_xy[1]),
             target_support_count=0,
-            confidence=confidence,
+            confidence=None,
             stop_reason=(
                 dispatch_result.stop_reason
                 or (
@@ -700,7 +703,7 @@ class LidarALXAssistedFollowRuntime:
             sdk_error=None,
             calibration_status="provisional",
         )
-        self._publish_status(cloud, preprocessed)
+        self._publish_status(cloud, preprocessed, now_s=now)
 
     def _alx_target_mask(
         self, cloud: PreprocessedCloud, alx_body_xy: np.ndarray
@@ -753,7 +756,7 @@ class LidarALXAssistedFollowRuntime:
         )
 
         self._state.last_strategy_result = strategy_result
-        self._publish_status(cloud, preprocessed)
+        self._publish_status(cloud, preprocessed, now_s=now)
 
     def _run_watchdog_checks(self, now: float) -> None:
         """Run watchdog safety checks.
@@ -782,12 +785,15 @@ class LidarALXAssistedFollowRuntime:
             > self.config.sensors.max_cloud_age_s
         ):
             self.stop_latch.request("cloud_stale", StopKind.HARD)
+            self._disable_follow_for_safety("cloud_stale")
             self._dispatch_stop_from_latch(self.stop_latch.snapshot())
             return
 
-        # Check ALX staleness
-        if not self._state.last_confidence or not self._state.last_confidence.alx_fresh:
-            self.stop_latch.request("alx_stale", StopKind.SOFT)
+        # Check ALX freshness only while follow is enabled. A disabled system
+        # may wait for ALX without accumulating an irrelevant stop latch.
+        if self._state.follow_enabled and not self._state.last_alx_synchronized:
+            self.stop_latch.request("alx_stale", StopKind.HARD)
+            self._disable_follow_for_safety("alx_stale")
 
     def _dispatch_stop_from_latch(self, latch_snapshot: StopSnapshot) -> None:
         """Dispatch stop command from latch state.
@@ -806,7 +812,7 @@ class LidarALXAssistedFollowRuntime:
                 cloud_sequence=self._state.last_processed_sequence,
                 stop_reason=reason,
                 lifecycle_state=self.lifecycle.state.value,
-                lock_state=self.target_manager.snapshot().state.value,
+                lock_state="alx_direct",
                 calibration_status="provisional",
             )
             self._last_safety_stop_reason = reason
@@ -827,39 +833,47 @@ class LidarALXAssistedFollowRuntime:
         self,
         cloud: Optional[CloudSnapshot],
         preprocessed: Optional[PreprocessedCloud],
+        now_s: Optional[float] = None,
     ) -> None:
         """Replace the bounded Web status snapshot with JSON-safe current state."""
-        target_snapshot = self.target_manager.snapshot()
-        observation = self._state.last_observation
         strategy = self._state.last_strategy_result
-        confidence = self._state.last_confidence
         max_points = self.config.web.max_visualization_points
 
         points = []
-        target_points = []
         if preprocessed is not None:
             raw_points = preprocessed.points_xyz
             stride = max(1, int(np.ceil(len(raw_points) / float(max_points))))
             points = raw_points[::stride].tolist()
-            if observation is not None:
-                target_points = observation.support_points_xyz.tolist()
-
-        center = target_snapshot.center_xy
         alx_xy = self._state.last_alx_body_xy
+        wristband = self.alx_reader.wristband_status()
+        now = time.monotonic() if now_s is None else now_s
+        received_at = wristband.received_at
+        if not isinstance(received_at, (int, float)):
+            received_at = None
+        wristband_state = wristband.state
+        wristband_state_name = (
+            wristband_state.name.lower()
+            if isinstance(wristband_state, WristbandTopicState)
+            else WristbandTopicState.UNKNOWN.name.lower()
+        )
+        wristband_age_ms = (
+            None
+            if received_at is None
+            else max(0.0, (now - received_at) * 1000.0)
+        )
+        latch = self.stop_latch.snapshot()
         self.latest_status.update(
             {
                 "cloud_sequence": cloud.sequence if cloud is not None else None,
                 "frame_id": cloud.frame_id if cloud is not None else None,
                 "points": points,
-                "target_points": target_points,
-                "target_gate": (
+                "target_exclusion": (
                     {
-                        "kind": "ellipse",
-                        "center_xy": list(center),
-                        "radial_radius_m": self.config.target.gate_radial_radius_m,
-                        "tangential_radius_m": self.config.target.gate_tangential_radius_m,
+                        "kind": "circle",
+                        "center_xy": alx_xy.tolist(),
+                        "radius_m": self.config.target.web_pick_radius_m,
                     }
-                    if center is not None
+                    if alx_xy is not None
                     else None
                 ),
                 "alx": {
@@ -869,37 +883,73 @@ class LidarALXAssistedFollowRuntime:
                     "offset_ms": self._state.last_alx_offset_ms,
                     "synchronized": self._state.last_alx_synchronized,
                 },
-                "lifecycle_state": self.lifecycle.state.value,
-                "lock_state": target_snapshot.state.value,
-                "confidence": (
-                    {
-                        "c_t": confidence.c_t,
-                        "c_g": confidence.c_g,
-                        "c_a": confidence.c_a,
-                        "total": confidence.total,
-                    }
-                    if confidence is not None
-                    else None
-                ),
-                "stop": {
-                    "requested": self.stop_latch.snapshot().requested,
-                    "kind": (
-                        self.stop_latch.snapshot().kind.value
-                        if self.stop_latch.snapshot().kind is not None
-                        else None
-                    ),
-                    "reason": self.stop_latch.snapshot().reason,
+                "wristband": {
+                    "state": wristband_state_name,
+                    "age_ms": wristband_age_ms,
+                    "fresh": self.alx_reader.is_wristband_status_fresh(now),
                 },
-                "dispatched_command": (
+                "cloud": {
+                    "age_ms": self._state.last_cloud_age_ms,
+                    "fresh": (
+                        self._state.last_cloud_received_at_s is not None
+                        and now - self._state.last_cloud_received_at_s
+                        <= self.config.sensors.max_cloud_age_s
+                    ),
+                },
+                "lifecycle_state": self.lifecycle.state.value,
+                "follow_enabled": self._state.follow_enabled,
+                "motion_state": self._motion_state(strategy, latch, now).value,
+                "start": {
+                    "state": self._state.last_start_result.state.value,
+                    "reason": self._state.last_start_result.reason,
+                    "timestamp_s": self._state.last_start_result.timestamp_s,
+                },
+                "stop": {
+                    "requested": latch.requested,
+                    "kind": None if latch.kind is None else latch.kind.value,
+                    "reason": latch.reason,
+                    "strategy_reason": (
+                        None if strategy is None or strategy.stop_reason is None
+                        else strategy.stop_reason.value
+                    ),
+                },
+                "command": (
                     {
-                        "vx": strategy.dispatched.vx,
-                        "vy": strategy.dispatched.vy,
-                        "omega": strategy.dispatched.omega,
-                        "reason": strategy.dispatched.reason,
+                        "requested": {
+                            "vx": strategy.apf_requested.vx,
+                            "vy": strategy.apf_requested.vy,
+                            "omega": strategy.apf_requested.omega,
+                            "reason": strategy.apf_requested.reason,
+                        },
+                        "dispatched": {
+                            "vx": strategy.dispatched.vx,
+                            "vy": strategy.dispatched.vy,
+                            "omega": strategy.dispatched.omega,
+                            "reason": strategy.dispatched.reason,
+                        },
                     }
                     if strategy is not None
                     else None
                 ),
+                "output_mode": self.config.output.mode,
                 "calibration_status": "provisional",
             }
         )
+
+    def _motion_state(self, strategy: Optional[StrategyResult], latch: StopSnapshot, now: float) -> MotionState:
+        """Derive the operator-facing state without duplicating safety truth."""
+        if latch.requested and latch.kind == StopKind.HARD:
+            return MotionState.SAFETY_STOP
+        if not self._state.follow_enabled:
+            return MotionState.DISABLED
+        if not self.alx_reader.is_wristband_status_fresh(now) or (
+            self.alx_reader.wristband_status().state != WristbandTopicState.ON
+        ):
+            return MotionState.WAITING_WRISTBAND
+        if self.lifecycle.state != LifecycleState.SENSORS_READY:
+            return MotionState.WAITING_LIDAR
+        if not self._state.last_alx_synchronized:
+            return MotionState.WAITING_ALX
+        if strategy is not None and strategy.stop_reason is not None:
+            return MotionState.BLOCKED_OBSTACLE
+        return MotionState.FOLLOWING

@@ -69,6 +69,35 @@ class StopReason(str, Enum):
     INVALID_INPUT = "invalid_input"
 
 
+class StartState(str, Enum):
+    """Result of the most recent Web follow-enable request."""
+
+    IDLE = "idle"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
+class MotionState(str, Enum):
+    """Operator-facing derived motion state for the Web monitor."""
+
+    DISABLED = "disabled"
+    WAITING_WRISTBAND = "waiting_wristband"
+    WAITING_LIDAR = "waiting_lidar"
+    WAITING_ALX = "waiting_alx"
+    FOLLOWING = "following"
+    BLOCKED_OBSTACLE = "blocked_obstacle"
+    SAFETY_STOP = "safety_stop"
+
+
+@dataclass(frozen=True)
+class StartResult:
+    """Persistent feedback for a Web Start Follow request."""
+
+    state: StartState = StartState.IDLE
+    reason: Optional[str] = None
+    timestamp_s: Optional[float] = None
+
+
 @dataclass(frozen=True)
 class CloudSnapshot:
     """Immutable LiDAR cloud snapshot with sequencing."""
@@ -115,7 +144,12 @@ class GatedTargetObservation:
 
 @dataclass(frozen=True)
 class ConfidenceResult:
-    """Computed confidence components."""
+    """Legacy confidence record retained only for CSV compatibility.
+
+    The assisted-follow runtime no longer computes or gates motion on this
+    value: ALX freshness and time synchronization are the target validity
+    contract.
+    """
 
     c_t: float
     c_g: float
