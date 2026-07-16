@@ -84,12 +84,16 @@ class PrototypeWebHub:
         latest_status: LatestStatus,
         max_clients: int = 8,
         max_events_per_second: float = 20.0,
+        status_interval_s: float = 0.1,
     ) -> None:
         self._stop_latch = stop_latch
         self._event_inbox = event_inbox
         self._latest_status = latest_status
         self._max_clients = max_clients
         self._max_events_per_second = max_events_per_second
+        if status_interval_s <= 0:
+            raise ValueError("status_interval_s must be positive")
+        self._status_interval_s = status_interval_s
 
         self._lock = asyncio.Lock()
         self._clients: Dict[str, ClientInfo] = {}
@@ -105,6 +109,11 @@ class PrototypeWebHub:
     def client_count(self) -> int:
         """Number of connected clients."""
         return len(self._clients)
+
+    @property
+    def status_interval_s(self) -> float:
+        """Minimum interval between Web status frames."""
+        return self._status_interval_s
 
     def role_of(self, client_id: str) -> Optional[str]:
         """Get the role of a connected client.
@@ -472,7 +481,7 @@ async def _handle_websocket(request: web.Request) -> web.WebSocketResponse:
                     last_version = frame["payload"]["version"]
                     await ws.send_json(frame)
 
-                await asyncio.sleep(0.1)  # 10 Hz
+                await asyncio.sleep(hub.status_interval_s)
             except (ConnectionResetError, asyncio.CancelledError):
                 break
             except Exception:

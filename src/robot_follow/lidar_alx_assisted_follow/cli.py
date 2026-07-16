@@ -394,6 +394,7 @@ def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
         latest_status=latest_status,
         max_clients=config.web.max_clients,
         max_events_per_second=config.web.max_events_per_second,
+        status_interval_s=1.0 / config.web.status_hz,
     )
     components["web_hub"] = web_hub
 
