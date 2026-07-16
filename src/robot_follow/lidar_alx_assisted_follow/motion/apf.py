@@ -1,4 +1,13 @@
-"""APF (Artificial Potential Field) motion planning."""
+"""Continuous ALX follow/avoidance inspired by ``jie_deamon``.
+
+For each fresh point cloud, the controller combines three velocity terms:
+
+``target tracking + target-corridor centering + APF repulsion``.
+
+Unlike the previous first-safe-heading planner, obstacles inside the influence
+zone steer and slow the robot.  Only a point inside the emergency *body
+clearance* boundary produces an immediate zero command.
+"""
 
 from __future__ import annotations
 
@@ -9,33 +18,34 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from robot_follow.lidar_alx_assisted_follow.config.schema import APFConfig, OutputConfig
+from robot_follow.lidar_alx_assisted_follow.config.schema import (
+    APFConfig,
+    OutputMotionConfig,
+)
 from robot_follow.lidar_alx_assisted_follow.domain.models import (
     MotionIntent,
     PreprocessedCloud,
     StopReason,
-    StopSnapshot,
-    StrategyResult,
 )
 
 
 @dataclass(frozen=True)
 class APFInput:
-    """Input to APF computation."""
+    """Input for one cloud-synchronous follow/avoidance pass."""
 
     cloud: PreprocessedCloud
     target_center_xy: Tuple[float, float]
-    target_mask: np.ndarray  # Boolean mask in downsampled domain
+    target_mask: np.ndarray  # ALX target returns, excluded from obstacle terms
     sequence: int
     alx_body_xy: Optional[np.ndarray] = None
-    # Transitional constructor compatibility for offline APF callers.  It is
-    # deliberately ignored: confidence is no longer an assisted-follow gate.
+    # Transitional constructor compatibility for offline callers. It is not a
+    # motion gate in the direct-ALX pipeline.
     confidence: object | None = None
 
 
 @dataclass(frozen=True)
 class APFResult:
-    """Result of APF computation."""
+    """Requested motion and any frame-local safety stop reason."""
 
     intent: MotionIntent
     stop_reason: Optional[StopReason]
@@ -44,204 +54,88 @@ class APFResult:
 def compute_apf(
     input_data: APFInput,
     config: APFConfig,
-    output_config: OutputConfig,
+    output_config: OutputMotionConfig,
 ) -> APFResult:
-    """Compute APF-based motion intent.
+    """Compute a continuous target/corridor/repulsion follow command.
 
-    Parameters
-    ----------
-    input_data : APFInput
-        Cloud and direct ALX target data.
-    config : APFConfig
-        APF configuration.
-    output_config : OutputConfig
-        Output limits configuration.
-
-    Returns
-    -------
-    APFResult
-        Motion intent and stop reason.
+    This adapts the ``jie_deamon`` LaserScan controller to our time-matched
+    ALX target and 3D LiDAR cloud.  Point-cloud preprocessing and
+    ``target_mask`` happen before this function, so the remaining points are
+    obstacle candidates in the body frame.
     """
-    # Validate inputs
     if not _validate_apf_inputs(input_data):
-        return APFResult(
-            intent=_zero_intent(input_data.sequence),
-            stop_reason=StopReason.INVALID_INPUT,
-        )
+        return APFResult(_zero_intent(input_data.sequence), StopReason.INVALID_INPUT)
 
-    target_xy = np.array(input_data.target_center_xy, dtype=np.float64)
+    target_xy = np.asarray(input_data.target_center_xy, dtype=np.float64)
     target_distance = float(np.linalg.norm(target_xy))
-
-    # Check 1: Target too close (hard stop, zero motion)
     if target_distance <= config.target_stop_distance_m:
         return APFResult(
-            intent=_zero_intent(input_data.sequence),
-            stop_reason=StopReason.TARGET_TOO_CLOSE,
+            _zero_intent(input_data.sequence), StopReason.TARGET_TOO_CLOSE
         )
 
-    # Check 2: Non-target hard clearance (hard stop, zero motion)
-    non_target_points = _get_non_target_points(
-        input_data.cloud.points_xyz,
-        input_data.target_mask,
-    )
-
-    for point_xy in non_target_points:
-        clearance = _compute_body_clearance(point_xy[:2], config)
-        if clearance <= config.non_target_hard_stop_clearance_m:
-            return APFResult(
-                intent=_zero_intent(input_data.sequence),
-                stop_reason=StopReason.NON_TARGET_HARD_CLEARANCE,
-            )
-
-    # Compute attraction force
-    r = target_distance
-    u = target_xy / r  # Unit vector toward target
-    f_att_magnitude = config.attraction_gain * max(r - config.target_desired_distance_m, 0.0)
-    F_att = f_att_magnitude * u
-
-    # Compute repulsion force
-    F_rep = np.zeros(2, dtype=np.float64)
-    for point_xy in non_target_points:
-        d = float(np.linalg.norm(point_xy[:2]))
-        if 0 < d < config.non_target_influence_m:
-            # Repulsion: (1/d - 1/influence) / d^2 * (-point/d)
-            repulsion_contribution = (
-                config.repulsion_gain
-                * (1.0 / d - 1.0 / config.non_target_influence_m)
-                / (d ** 2)
-            )
-            direction = -point_xy[:2] / d
-            F_rep += repulsion_contribution * direction
-
-    # Cap repulsion force
-    F_rep_norm = float(np.linalg.norm(F_rep))
-    if F_rep_norm > config.repulsion_cap:
-        F_rep = F_rep * (config.repulsion_cap / F_rep_norm)
-
-    # Total force
-    F = F_att + F_rep
-    F_norm = float(np.linalg.norm(F))
-
-    # Target bearing angle
-    target_bearing_rad = math.atan2(target_xy[1], target_xy[0])
-    target_bearing_deg = math.degrees(target_bearing_rad)
-
-    # Check 4: Turn in place if bearing > 35 degrees
-    if abs(target_bearing_deg) > config.turn_in_place_bearing_deg:
-        # Check if rotation is safe
-        rotation_radius = math.hypot(config.body_half_length_m, config.body_half_width_m)
-        rotation_clearance = rotation_radius + config.swept_margin_m
-
-        rotation_safe = True
-        for point_xy in non_target_points:
-            d = float(np.linalg.norm(point_xy[:2]))
-            if d < rotation_clearance:
-                rotation_safe = False
-                break
-
-        if rotation_safe:
-            # Pure rotation command
-            omega = float(np.clip(
-                config.omega_gain * target_bearing_rad,
-                -output_config.max_abs_omega,
-                output_config.max_abs_omega,
-            ))
-            return APFResult(
-                intent=MotionIntent(
-                    sequence=input_data.sequence,
-                    vx=0.0,
-                    vy=0.0,
-                    omega=omega,
-                    reason="turn_in_place",
-                    generated_at_s=time.monotonic(),
-                ),
-                stop_reason=None,
-            )
-        else:
-            # Unsafe rotation
-            return APFResult(
-                intent=_zero_intent(input_data.sequence),
-                stop_reason=StopReason.UNSAFE_ROTATION,
-            )
-
-    # Normal translation case
-    if F_norm < 1e-6:
-        # Zero force
+    obstacles = _get_non_target_points(input_data.cloud.points_xyz, input_data.target_mask)
+    min_clearance = _minimum_body_clearance(obstacles, config)
+    if min_clearance <= config.non_target_hard_stop_clearance_m:
         return APFResult(
-            intent=_zero_intent(input_data.sequence),
-            stop_reason=None,
+            _zero_intent(input_data.sequence), StopReason.NON_TARGET_HARD_CLEARANCE
         )
 
-    # Compute requested speed
-    max_speed = math.hypot(output_config.max_vx, output_config.max_abs_vy)
-    requested_speed = min(F_norm, max_speed)
+    # 1. Target tracking: use forward target error for translation and the
+    # bearing for yaw, matching jie_deamon's follow controller. Reverse is
+    # deliberately disabled for G1 follow tests; a target behind the robot
+    # creates yaw but no backward drive.
+    forward_error = float(target_xy[0] - config.target_desired_distance_m)
+    vx_target = 0.0 if abs(forward_error) < 0.05 else config.attraction_gain * forward_error
+    omega = config.omega_gain * math.atan2(float(target_xy[1]), float(target_xy[0]))
 
-    # Force direction
-    force_angle_rad = math.atan2(F[1], F[0])
+    # 2. Target corridor centering: find the closest inward obstacle on each
+    # side of the body-to-target corridor. An obstacle on the right produces a
+    # positive vy (move left), and vice versa.
+    vy_corridor = _corridor_lateral_velocity(target_xy, obstacles, config)
 
-    # Try candidate headings
-    candidate_angles_rad = [math.radians(deg) for deg in config.candidate_angles_deg]
+    # 3. APF repulsion: sum inverse-distance repulsive velocity contributions
+    # inside the influence radius, then cap their resultant magnitude.
+    repulse = _repulsion_velocity(obstacles, config)
 
-    # Sort by angular difference from force direction
-    candidate_angles_rad = sorted(
-        candidate_angles_rad,
-        key=lambda a: abs(a - force_angle_rad),
-    )
+    vx = vx_target + float(repulse[0])
+    vy = vy_corridor + float(repulse[1])
 
-    # Find first safe candidate
-    for theta in candidate_angles_rad:
-        vx = float(np.clip(requested_speed * math.cos(theta), 0.0, output_config.max_vx))
-        vy = float(np.clip(requested_speed * math.sin(theta), -output_config.max_abs_vy, output_config.max_abs_vy))
+    # jie_deamon slows only forward motion near an obstacle, retaining lateral
+    # authority so the robot can continue to sidestep around it.
+    if min_clearance < config.slowdown_clearance_m:
+        slowdown = (min_clearance - config.non_target_hard_stop_clearance_m) / (
+            config.slowdown_clearance_m - config.non_target_hard_stop_clearance_m
+        )
+        vx *= float(np.clip(slowdown, 0.1, 1.0))
 
-        # Check swept envelope
-        if _is_swept_envelope_safe(
-            vx, vy,
-            non_target_points,
-            config,
-        ):
-            omega = float(np.clip(
-                config.omega_gain * target_bearing_rad,
-                -output_config.max_abs_omega,
-                output_config.max_abs_omega,
-            ))
-            return APFResult(
-                intent=MotionIntent(
-                    sequence=input_data.sequence,
-                    vx=vx,
-                    vy=vy,
-                    omega=omega,
-                    reason="follow",
-                    generated_at_s=time.monotonic(),
-                ),
-                stop_reason=None,
-            )
+    vx = float(np.clip(vx, 0.0, output_config.max_vx))
+    vy = float(np.clip(vy, -output_config.max_abs_vy, output_config.max_abs_vy))
+    omega = float(np.clip(omega, -output_config.max_abs_omega, output_config.max_abs_omega))
 
-    # No safe direction
     return APFResult(
-        intent=_zero_intent(input_data.sequence),
-        stop_reason=StopReason.ALL_DIRECTIONS_UNSAFE,
+        intent=MotionIntent(
+            sequence=input_data.sequence,
+            vx=vx,
+            vy=vy,
+            omega=omega,
+            reason="follow_avoid" if len(obstacles) else "follow",
+            generated_at_s=time.monotonic(),
+        ),
+        stop_reason=None,
     )
 
 
 def _validate_apf_inputs(input_data: APFInput) -> bool:
-    """Validate APF inputs are finite and non-empty."""
-    if input_data.cloud.points_xyz.shape[0] == 0:
-        return False
-
-    if not np.all(np.isfinite(input_data.cloud.points_xyz)):
-        return False
-
-    if not np.all(np.isfinite(input_data.target_center_xy)):
-        return False
-
-    if input_data.target_mask.shape[0] != input_data.cloud.points_xyz.shape[0]:
-        return False
-
-    return True
+    """Validate finite, non-empty cloud data and matching target mask."""
+    return bool(
+        input_data.cloud.points_xyz.shape[0]
+        and np.all(np.isfinite(input_data.cloud.points_xyz))
+        and np.all(np.isfinite(input_data.target_center_xy))
+        and input_data.target_mask.shape[0] == input_data.cloud.points_xyz.shape[0]
+    )
 
 
 def _zero_intent(sequence: int) -> MotionIntent:
-    """Create zero motion intent."""
     return MotionIntent(
         sequence=sequence,
         vx=0.0,
@@ -252,82 +146,75 @@ def _zero_intent(sequence: int) -> MotionIntent:
     )
 
 
-def _get_non_target_points(
-    points_xyz: np.ndarray,
-    target_mask: np.ndarray,
-) -> np.ndarray:
-    """Extract non-target points."""
+def _get_non_target_points(points_xyz: np.ndarray, target_mask: np.ndarray) -> np.ndarray:
     return points_xyz[~target_mask]
 
 
-def _compute_body_clearance(
-    point_xy: np.ndarray,
-    config: APFConfig,
-) -> float:
-    """Compute clearance from body envelope to a point.
+def _minimum_body_clearance(obstacles: np.ndarray, config: APFConfig) -> float:
+    if len(obstacles) == 0:
+        return float("inf")
+    return min(_compute_body_clearance(point[:2], config) for point in obstacles)
 
-    Body envelope: [-body_half_length, body_half_length] x [-body_half_width, body_half_width]
 
-    Clearance = hypot(max(|x| - body_half_length, 0), max(|y| - body_half_width, 0))
-    """
-    dx = max(abs(point_xy[0]) - config.body_half_length_m, 0.0)
-    dy = max(abs(point_xy[1]) - config.body_half_width_m, 0.0)
+def _compute_body_clearance(point_xy: np.ndarray, config: APFConfig) -> float:
+    """Return exterior clearance from the rectangular G1 body envelope."""
+    dx = max(abs(float(point_xy[0])) - config.body_half_length_m, 0.0)
+    dy = max(abs(float(point_xy[1])) - config.body_half_width_m, 0.0)
     return float(math.hypot(dx, dy))
 
 
-def _is_swept_envelope_safe(
-    vx: float,
-    vy: float,
-    non_target_points: np.ndarray,
+def _corridor_lateral_velocity(
+    target_xy: np.ndarray,
+    obstacles: np.ndarray,
     config: APFConfig,
-) -> bool:
-    """Check if swept envelope is clear of obstacles.
+) -> float:
+    """Compute jie_deamon-style lateral centering within the target corridor."""
+    target_distance = float(np.linalg.norm(target_xy))
+    if target_distance < 1e-6:
+        return 0.0
 
-    Swept envelope: body rectangle extended along velocity direction.
+    forward = target_xy / target_distance
+    left_normal = np.array([-forward[1], forward[0]], dtype=np.float64)
+    half_width = config.body_half_width_m + config.swept_margin_m
+    left_inner = -half_width
+    right_inner = half_width
 
-    Parameters
-    ----------
-    vx, vy : float
-        Velocity components (m/s).
-    non_target_points : np.ndarray
-        Non-target obstacle points (N, 3).
-    config : APFConfig
-        APF configuration.
+    for point in obstacles:
+        xy = point[:2]
+        longitudinal = float(xy @ forward)
+        lateral = float(xy @ left_normal)
+        if 0.0 <= longitudinal <= target_distance and abs(lateral) <= half_width:
+            if lateral > 0.0:
+                left_inner = max(left_inner, lateral)
+            else:
+                right_inner = min(right_inner, lateral)
 
-    Returns
-    -------
-    bool
-        True if swept envelope is safe.
-    """
-    if len(non_target_points) == 0:
-        return True
+    lateral_error = -(left_inner + right_inner)
+    if abs(lateral_error) < 0.03:
+        return 0.0
+    return config.corridor_gain * lateral_error
 
-    speed = math.hypot(vx, vy)
-    if speed < 1e-6:
-        # Zero velocity is always safe
-        return True
 
-    # Direction unit vector
-    theta = math.atan2(vy, vx)
-    e = np.array([math.cos(theta), math.sin(theta)])
-    n = np.array([-math.sin(theta), math.cos(theta)])
-
-    # Sweep distance
-    sweep_distance = max(config.swept_min_distance_m, speed * config.swept_horizon_s)
-
-    # Check each obstacle
-    for point_xy in non_target_points:
-        longitudinal = float(point_xy[:2] @ e)
-        lateral = float(point_xy[:2] @ n)
-
-        # Check if in swept rectangle
-        in_longitudinal = (
-            -config.body_half_length_m <= longitudinal
-            <= config.body_half_length_m + sweep_distance + config.swept_margin_m
+def _repulsion_velocity(obstacles: np.ndarray, config: APFConfig) -> np.ndarray:
+    """Sum and cap APF repulsion from forward/side obstacles."""
+    repulse = np.zeros(2, dtype=np.float64)
+    for point in obstacles:
+        xy = point[:2]
+        distance = float(np.linalg.norm(xy))
+        if not (0.0 < distance < config.non_target_influence_m):
+            continue
+        # Match jie_deamon's choice to ignore obstacles materially behind the
+        # robot for repulsion; body-clearance emergency checking still applies.
+        if xy[0] <= -config.swept_margin_m:
+            continue
+        force = (
+            config.repulsion_gain
+            * (1.0 / distance - 1.0 / config.non_target_influence_m)
+            / (distance**2)
         )
-        in_lateral = abs(lateral) <= config.body_half_width_m + config.swept_margin_m
+        repulse -= force * xy / distance
 
-        if in_longitudinal and in_lateral:
-            return False
-
-    return True
+    magnitude = float(np.linalg.norm(repulse))
+    if magnitude > config.repulsion_cap:
+        repulse *= config.repulsion_cap / magnitude
+    return repulse

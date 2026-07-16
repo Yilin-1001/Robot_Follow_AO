@@ -324,18 +324,26 @@ class ConfidenceConfig:
 
 @dataclass(frozen=True)
 class APFConfig:
-    """APF planning configuration."""
+    """Continuous follow/avoidance configuration.
+
+    The controller follows the ``jie_deamon`` pattern: target tracking,
+    corridor-centering and obstacle repulsion are summed into one command.
+    ``non_target_hard_stop_clearance_m`` remains an emergency body-clearance
+    boundary; it is not a general obstacle-blocking threshold.
+    """
 
     target_desired_distance_m: float = 1.00
     target_stop_distance_m: float = 0.80
     non_target_influence_m: float = 1.20
     non_target_hard_stop_clearance_m: float = 0.60
+    slowdown_clearance_m: float = 0.80
     body_half_length_m: float = 0.30
     body_half_width_m: float = 0.25
     swept_margin_m: float = 0.10
     swept_min_distance_m: float = 0.40
     swept_horizon_s: float = 1.00
     attraction_gain: float = 0.60
+    corridor_gain: float = 0.50
     repulsion_gain: float = 0.02
     repulsion_cap: float = 0.25
     candidate_angles_deg: Tuple[float, ...] = (0, 30, -30, 60, -60, 90, -90)
@@ -352,12 +360,19 @@ class APFConfig:
             )
         _validate_positive(self.non_target_influence_m, "apf.non_target_influence_m")
         _validate_non_negative(self.non_target_hard_stop_clearance_m, "apf.non_target_hard_stop_clearance_m")
+        _validate_positive(self.slowdown_clearance_m, "apf.slowdown_clearance_m")
+        if self.slowdown_clearance_m <= self.non_target_hard_stop_clearance_m:
+            raise ValueError(
+                "apf.slowdown_clearance_m must be > "
+                "apf.non_target_hard_stop_clearance_m"
+            )
         _validate_non_negative(self.body_half_length_m, "apf.body_half_length_m")
         _validate_non_negative(self.body_half_width_m, "apf.body_half_width_m")
         _validate_non_negative(self.swept_margin_m, "apf.swept_margin_m")
         _validate_positive(self.swept_min_distance_m, "apf.swept_min_distance_m")
         _validate_positive(self.swept_horizon_s, "apf.swept_horizon_s")
         _validate_non_negative(self.attraction_gain, "apf.attraction_gain")
+        _validate_non_negative(self.corridor_gain, "apf.corridor_gain")
         _validate_non_negative(self.repulsion_gain, "apf.repulsion_gain")
         _validate_non_negative(self.repulsion_cap, "apf.repulsion_cap")
         _validate_non_negative(self.turn_in_place_bearing_deg, "apf.turn_in_place_bearing_deg")

@@ -39,9 +39,11 @@ lidar_alx_assisted_follow:
 
   g1:
     network_interface: eth0
-    max_vx: 0.10
-    max_abs_vy: 0.08
-    max_abs_omega: 0.25
+    # Moderately visible real-test envelope. Keep these equal to
+    # output_motion.* so the bridge does not apply a second tighter clamp.
+    max_vx: 0.20
+    max_abs_vy: 0.12
+    max_abs_omega: 0.45
     yaw_sign: 1
     sdk_timeout_s: 10.0
     sdk_timeout_code: 3104
@@ -50,7 +52,10 @@ lidar_alx_assisted_follow:
     command_timeout_s: 0.50
 
   output:
-    mode: mock
+    # Real G1 output. The CLI still requires --confirm-real-g1, and because
+    # calibration below is provisional it also requires
+    # --allow-provisional-calibration for each real-robot launch.
+    mode: real
 
   runtime:
     watchdog_hz: 40.0
@@ -61,7 +66,9 @@ lidar_alx_assisted_follow:
   target:
     radial_min_m: 0.25
     radial_max_m: 5.0
-    physical_height_min_m: 0.10
+    # Keep returns from obstacles at least 3 cm above the floor. This retains
+    # low obstacles while rejecting the most likely residual ground returns.
+    physical_height_min_m: 0.03
     physical_height_max_m: 2.00
     self_x_min_m: -0.35
     self_x_max_m: 0.25
@@ -98,34 +105,36 @@ lidar_alx_assisted_follow:
   apf:
     target_desired_distance_m: 1.00
     target_stop_distance_m: 0.80
-    non_target_influence_m: 1.20
-    non_target_hard_stop_clearance_m: 0.60
+    # jie_deamon-style continuous avoidance: points inside the influence zone
+    # contribute repulsion/corridor steering. Only the emergency body-clearance
+    # boundary produces an immediate stop.
+    non_target_influence_m: 0.80
+    non_target_hard_stop_clearance_m: 0.25
+    slowdown_clearance_m: 0.60
     body_half_length_m: 0.30
     body_half_width_m: 0.25
     swept_margin_m: 0.10
     swept_min_distance_m: 0.40
     swept_horizon_s: 1.00
     attraction_gain: 0.60
+    corridor_gain: 0.50
     repulsion_gain: 0.02
     repulsion_cap: 0.25
-    candidate_angles_deg: [0, 30, -30, 60, -60, 90, -90]
-    turn_in_place_bearing_deg: 35.0
     omega_gain: 0.80
 
   output_motion:
-    # Mock dry-run profile: make the ALX-follow/APF command clearly visible
-    # on the web panel. ``output.mode`` above remains mock, so these commands
-    # are recorded only and never sent to the G1 SDK.
-    # Keep the separate g1.* limits unchanged for a later real-robot trial.
-    max_vx: 0.40
-    max_abs_vy: 0.20
-    max_abs_omega: 0.80
-    accel_vx: 0.50
-    decel_vx: 0.80
-    accel_vy: 0.40
-    decel_vy: 0.80
-    accel_omega: 1.50
-    decel_omega: 2.00
+    # Moderately visible real-test profile. These limits deliberately match
+    # g1.* above so the limiter and final G1 bridge agree on the command
+    # envelope.
+    max_vx: 0.20
+    max_abs_vy: 0.12
+    max_abs_omega: 0.45
+    accel_vx: 0.30
+    decel_vx: 0.50
+    accel_vy: 0.25
+    decel_vy: 0.50
+    accel_omega: 0.90
+    decel_omega: 1.40
 
   web:
     host: 127.0.0.1
