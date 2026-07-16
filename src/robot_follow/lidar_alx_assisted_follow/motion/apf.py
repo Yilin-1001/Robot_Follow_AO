@@ -70,6 +70,7 @@ def compute_apf(
     target_xy = np.asarray(input_data.target_center_xy, dtype=np.float64)
     target_distance = float(np.linalg.norm(target_xy))
     obstacles = _get_non_target_points(input_data.cloud.points_xyz, input_data.target_mask)
+    obstacles = _filter_obstacle_processing_region(obstacles, config)
     if config.automatic_target_retreat_enabled and (
         input_data.target_retreat_active
         or target_distance < config.target_retreat_start_distance_m
@@ -93,7 +94,7 @@ def compute_apf(
         )
 
     min_clearance = _minimum_body_clearance(obstacles, config)
-    if min_clearance <= config.non_target_hard_stop_clearance_m:
+    if _has_hard_clearance_violation(obstacles, config):
         escape_intent = _safe_escape_intent(
             obstacles,
             input_data.sequence,
@@ -176,6 +177,20 @@ def _get_non_target_points(points_xyz: np.ndarray, target_mask: np.ndarray) -> n
     return points_xyz[~target_mask]
 
 
+def _filter_obstacle_processing_region(
+    obstacles: np.ndarray, config: APFConfig
+) -> np.ndarray:
+    """Keep only the robot-local region relevant to collision and retreat."""
+    if obstacles.size == 0:
+        return obstacles
+    mask = (
+        (obstacles[:, 0] >= config.obstacle_x_min_m)
+        & (obstacles[:, 0] <= config.obstacle_x_max_m)
+        & (np.abs(obstacles[:, 1]) <= config.obstacle_abs_y_max_m)
+    )
+    return obstacles[mask]
+
+
 def _minimum_body_clearance(obstacles: np.ndarray, config: APFConfig) -> float:
     if len(obstacles) == 0:
         return float("inf")
@@ -190,9 +205,9 @@ def _safe_escape_intent(
 ) -> Optional[MotionIntent]:
     """Build an escape command only if a short point-cloud sweep is safe.
 
-    The nearest emergency obstacle defines the direction away from contact.
-    Any candidate that decreases clearance to a measured point, or crosses
-    into the emergency zone for a previously safe point, is rejected.
+    Only a forward emergency obstacle may trigger automatic escape.  The
+    command is a straight, low-speed reverse rather than a lateral sidestep,
+    preventing left/right oscillation between walls in narrow corridors.
     """
     if not config.automatic_escape_enabled or obstacles.size == 0:
         return None
@@ -202,12 +217,23 @@ def _safe_escape_intent(
         [_compute_body_clearance(point, config) for point in obstacle_xy],
         dtype=np.float64,
     )
-    critical_point = obstacle_xy[int(np.argmin(clearances))]
-    distance = float(np.linalg.norm(critical_point))
-    if distance <= 1e-6:
+    required_clearances = np.array(
+        [_required_hard_clearance(point, config) for point in obstacle_xy],
+        dtype=np.float64,
+    )
+    violating = clearances <= required_clearances
+    forward_violating = violating & (obstacle_xy[:, 0] > 0.0)
+    if not np.any(forward_violating):
         return None
 
-    direction = -critical_point / distance
+    forward_indices = np.where(forward_violating)[0]
+    critical_index = forward_indices[
+        int(np.argmin((clearances - required_clearances)[forward_indices]))
+    ]
+    if obstacle_xy[critical_index, 0] <= 1e-6:
+        return None
+
+    direction = np.array([-1.0, 0.0], dtype=np.float64)
     if not _escape_path_is_safe(
         obstacle_xy,
         clearances,
@@ -217,22 +243,14 @@ def _safe_escape_intent(
     ):
         return None
 
-    velocity_xy = direction * config.escape_speed_mps
-    vx = float(np.clip(velocity_xy[0], -output_config.max_reverse_vx, output_config.max_vx))
-    vy = float(
-        np.clip(
-            velocity_xy[1],
-            -output_config.max_abs_vy,
-            output_config.max_abs_vy,
-        )
-    )
-    if math.hypot(vx, vy) <= 1e-6:
+    vx = -min(config.escape_speed_mps, output_config.max_reverse_vx)
+    if vx >= -1e-6:
         return None
 
     return MotionIntent(
         sequence=sequence,
         vx=vx,
-        vy=vy,
+        vy=0.0,
         omega=0.0,
         reason="automatic_escape",
         generated_at_s=time.monotonic(),
@@ -297,15 +315,13 @@ def _escape_path_is_safe(
     probe_distance_m: float,
 ) -> bool:
     """Verify a short translational sweep against all observed obstacles."""
-    hard_clearance = config.non_target_hard_stop_clearance_m
-    endpoint_min_clearance = float("-inf")
-
     for fraction in (0.25, 0.50, 0.75, 1.00):
         displacement = direction * probe_distance_m * fraction
+        future_points = obstacle_xy - displacement
         future_clearances = np.array(
             [
-                _compute_body_clearance(point - displacement, config)
-                for point in obstacle_xy
+                _compute_body_clearance(point, config)
+                for point in future_points
             ],
             dtype=np.float64,
         )
@@ -314,24 +330,62 @@ def _escape_path_is_safe(
         if np.any(future_clearances + 1e-6 < initial_clearances):
             return False
 
-        # A point initially outside the emergency boundary must remain outside.
-        previously_safe = initial_clearances > hard_clearance
-        if np.any(future_clearances[previously_safe] <= hard_clearance):
+        initial_required = np.array(
+            [_required_hard_clearance(point, config) for point in obstacle_xy],
+            dtype=np.float64,
+        )
+        future_required = np.array(
+            [_required_hard_clearance(point, config) for point in future_points],
+            dtype=np.float64,
+        )
+
+        # A point initially outside its direction-specific emergency boundary
+        # must remain outside after the robot moves.
+        previously_safe = initial_clearances > initial_required
+        if np.any(future_clearances[previously_safe] <= future_required[previously_safe]):
             return False
 
         if fraction == 1.00:
-            endpoint_min_clearance = float(np.min(future_clearances))
+            return bool(
+                np.all(
+                    future_clearances
+                    >= future_required + config.escape_min_clearance_gain_m
+                )
+            )
 
-    return endpoint_min_clearance >= (
-        hard_clearance + config.escape_min_clearance_gain_m
-    )
+    return False
 
 
 def _compute_body_clearance(point_xy: np.ndarray, config: APFConfig) -> float:
     """Return exterior clearance from the rectangular G1 body envelope."""
+    dx, dy = _body_clearance_components(point_xy, config)
+    return float(math.hypot(dx, dy))
+
+
+def _body_clearance_components(
+    point_xy: np.ndarray, config: APFConfig
+) -> tuple[float, float]:
+    """Return longitudinal and lateral distances outside the body rectangle."""
     dx = max(abs(float(point_xy[0])) - config.body_half_length_m, 0.0)
     dy = max(abs(float(point_xy[1])) - config.body_half_width_m, 0.0)
-    return float(math.hypot(dx, dy))
+    return dx, dy
+
+
+def _required_hard_clearance(point_xy: np.ndarray, config: APFConfig) -> float:
+    """Use the side clearance only when the point is predominantly lateral."""
+    dx, dy = _body_clearance_components(point_xy, config)
+    if dy > dx:
+        return config.side_hard_clearance_m
+    return config.non_target_hard_stop_clearance_m
+
+
+def _has_hard_clearance_violation(obstacles: np.ndarray, config: APFConfig) -> bool:
+    """Return True when any point violates its directional hard clearance."""
+    return any(
+        _compute_body_clearance(point[:2], config)
+        <= _required_hard_clearance(point[:2], config)
+        for point in obstacles
+    )
 
 
 def _corridor_lateral_velocity(

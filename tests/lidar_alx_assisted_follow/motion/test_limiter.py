@@ -57,6 +57,23 @@ class TestBasicLimiting:
         assert limited.vy == 0.0
         assert limited.omega == 0.0
 
+    def test_disabled_slew_limit_applies_capped_command_immediately(self):
+        """Direct mode removes the initial zero frame while retaining speed caps."""
+        config = OutputMotionConfig(
+            slew_rate_limit_enabled=False,
+            max_vx=0.10,
+            max_reverse_vx=0.06,
+            max_abs_vy=0.08,
+            max_abs_omega=0.25,
+        )
+        limited = CommandSlewRateLimiter(config=config).limit(
+            make_intent(vx=1.0, vy=-1.0, omega=1.0),
+            now_s=time.monotonic(),
+        )
+        assert limited.vx == 0.10
+        assert limited.vy == -0.08
+        assert limited.omega == 0.25
+
     def test_acceleration_is_limited(self):
         """Acceleration should be limited by config."""
         config = OutputMotionConfig(

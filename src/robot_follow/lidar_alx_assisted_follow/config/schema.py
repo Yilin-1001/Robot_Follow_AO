@@ -336,7 +336,11 @@ class APFConfig:
     target_stop_distance_m: float = 0.80
     non_target_influence_m: float = 1.20
     non_target_hard_stop_clearance_m: float = 0.60
+    side_hard_clearance_m: float = 0.60
     slowdown_clearance_m: float = 0.80
+    obstacle_x_min_m: float = -0.80
+    obstacle_x_max_m: float = 2.50
+    obstacle_abs_y_max_m: float = 1.20
     body_half_length_m: float = 0.30
     body_half_width_m: float = 0.25
     swept_margin_m: float = 0.10
@@ -372,12 +376,20 @@ class APFConfig:
             )
         _validate_positive(self.non_target_influence_m, "apf.non_target_influence_m")
         _validate_non_negative(self.non_target_hard_stop_clearance_m, "apf.non_target_hard_stop_clearance_m")
+        _validate_non_negative(self.side_hard_clearance_m, "apf.side_hard_clearance_m")
         _validate_positive(self.slowdown_clearance_m, "apf.slowdown_clearance_m")
         if self.slowdown_clearance_m <= self.non_target_hard_stop_clearance_m:
             raise ValueError(
                 "apf.slowdown_clearance_m must be > "
                 "apf.non_target_hard_stop_clearance_m"
             )
+        _validate_finite(self.obstacle_x_min_m, "apf.obstacle_x_min_m")
+        _validate_positive(self.obstacle_x_max_m, "apf.obstacle_x_max_m")
+        if self.obstacle_x_min_m >= self.obstacle_x_max_m:
+            raise ValueError(
+                "apf.obstacle_x_min_m must be < apf.obstacle_x_max_m"
+            )
+        _validate_positive(self.obstacle_abs_y_max_m, "apf.obstacle_abs_y_max_m")
         _validate_non_negative(self.body_half_length_m, "apf.body_half_length_m")
         _validate_non_negative(self.body_half_width_m, "apf.body_half_width_m")
         _validate_non_negative(self.swept_margin_m, "apf.swept_margin_m")
@@ -434,6 +446,7 @@ class APFConfig:
 class OutputMotionConfig:
     """Output motion limiting configuration."""
 
+    slew_rate_limit_enabled: bool = True
     max_vx: float = 0.10
     max_reverse_vx: float = 0.0
     max_abs_vy: float = 0.08
@@ -446,6 +459,8 @@ class OutputMotionConfig:
     decel_omega: float = 1.00
 
     def __post_init__(self) -> None:
+        if not isinstance(self.slew_rate_limit_enabled, bool):
+            raise ValueError("output_motion.slew_rate_limit_enabled must be a boolean")
         _validate_non_negative(self.max_vx, "output_motion.max_vx")
         _validate_non_negative(self.max_reverse_vx, "output_motion.max_reverse_vx")
         _validate_non_negative(self.max_abs_vy, "output_motion.max_abs_vy")

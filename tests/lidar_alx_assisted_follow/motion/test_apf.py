@@ -175,6 +175,25 @@ def test_obstacle_outside_lateral_avoidance_rectangle_does_not_create_sidestep()
     assert result.intent.vy == 0.0
 
 
+def test_obstacle_outside_local_processing_region_is_not_used_by_apf() -> None:
+    """Far side points remain available for visualization but skip APF work."""
+    result = compute_apf(
+        make_input(
+            np.array([[1.5, 0.0, 0.2], [1.0, 1.30, 0.2]]),
+            target_mask=np.array([True, False]),
+        ),
+        APFConfig(
+            obstacle_x_min_m=-0.8,
+            obstacle_x_max_m=2.5,
+            obstacle_abs_y_max_m=1.2,
+            repulsion_gain=0.0,
+        ),
+        default_output(),
+    )
+    assert result.stop_reason is None
+    assert result.intent.reason == "follow"
+
+
 def test_obstacle_reduces_forward_speed_but_keeps_lateral_authority() -> None:
     clear = compute_apf(
         make_input(np.array([[1.5, 0.0, 0.2]]), target_mask=np.array([True])),
@@ -205,6 +224,22 @@ def test_emergency_body_clearance_still_stops() -> None:
     )
     assert result.stop_reason == StopReason.NON_TARGET_HARD_CLEARANCE
     assert result.intent.vx == result.intent.vy == result.intent.omega == 0.0
+
+
+def test_side_clearance_can_be_lower_than_front_hard_clearance() -> None:
+    """A side wall may use a smaller corridor clearance without weakening front stop."""
+    result = compute_apf(
+        make_input(
+            np.array([[1.5, 0.0, 0.2], [0.0, 0.45, 0.2]]),
+            target_mask=np.array([True, False]),
+        ),
+        APFConfig(
+            non_target_hard_stop_clearance_m=0.25,
+            side_hard_clearance_m=0.20,
+        ),
+        default_output(),
+    )
+    assert result.stop_reason is None
 
 
 def test_hard_clearance_uses_safe_automatic_escape_away_from_front_obstacle() -> None:
@@ -254,6 +289,25 @@ def test_automatic_escape_refuses_to_move_toward_rear_obstacle() -> None:
     )
     assert result.stop_reason == StopReason.NON_TARGET_HARD_CLEARANCE
     assert result.intent.vx == 0.0
+
+
+def test_automatic_escape_does_not_sidestep_away_from_side_wall() -> None:
+    """A lateral hard-clearance breach must not cause left/right oscillation."""
+    result = compute_apf(
+        make_input(
+            np.array([[1.5, 0.0, 0.2], [0.0, 0.40, 0.2]]),
+            target_mask=np.array([True, False]),
+        ),
+        APFConfig(
+            non_target_hard_stop_clearance_m=0.25,
+            side_hard_clearance_m=0.20,
+            automatic_escape_enabled=True,
+        ),
+        OutputMotionConfig(max_reverse_vx=0.08),
+    )
+    assert result.stop_reason == StopReason.NON_TARGET_HARD_CLEARANCE
+    assert result.intent.vx == 0.0
+    assert result.intent.vy == 0.0
 
 
 def test_target_bearing_is_fused_as_yaw_while_translating() -> None:

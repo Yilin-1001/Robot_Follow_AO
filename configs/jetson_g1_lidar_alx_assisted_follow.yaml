@@ -69,7 +69,7 @@ lidar_alx_assisted_follow:
     self_x_min_m: -0.35                     # 机身自遮挡框的后边界。
     self_x_max_m: 0.25                      # 机身自遮挡框的前边界。
     self_abs_y_max_m: 0.25                  # 机身自遮挡框的左右半宽。
-    voxel_size_m: 0.05                      # 体素下采样边长；增大可明显减少后续点数。
+    voxel_size_m: 0.08                      # 体素下采样边长；增大可明显减少后续点数。
     web_pick_radius_m: 0.45                 # ALX 手腕标签附近的人体点云排除半径，避免将跟随者作为障碍物。
     # 以下目标门限/跟踪参数为兼容保留项；通常无需调整。
     gate_radial_radius_m: 0.45              # 旧目标门限的径向容差。
@@ -104,7 +104,11 @@ lidar_alx_assisted_follow:
     target_stop_distance_m: 0.80            # 小于该距离时停止靠近目标。
     non_target_influence_m: 1.80            # 非目标障碍开始产生连续规避作用的距离。
     non_target_hard_stop_clearance_m: 0.25  # 侵入机身紧急净空时硬停止。
+    side_hard_clearance_m: 0.20             # 主要来自两侧墙面的侧向硬净空；正前/正后仍使用 0.25 m。
     slowdown_clearance_m: 0.60              # 障碍靠近时开始减速的净空距离。
+    obstacle_x_min_m: -0.80                 # APF 处理障碍的后方边界，保留后退路径验证空间。
+    obstacle_x_max_m: 2.50                  # APF 处理障碍的前方边界，窗口外点不参与逐点避障计算。
+    obstacle_abs_y_max_m: 1.20              # APF 处理障碍的左右半宽。
     body_half_length_m: 0.30                # 机器人机身半长。
     body_half_width_m: 0.225                # 机器人机身半宽；对应 450 mm 肩宽的一半。
     swept_margin_m: 0.10                    # 运动扫掠区域附加安全边界。
@@ -113,7 +117,7 @@ lidar_alx_assisted_follow:
     swept_min_distance_m: 0.40              # 扫掠检测的最小净空。
     swept_horizon_s: 1.00                   # 扫掠检测的预测时间窗。
     attraction_gain: 0.60                   # 目标吸引增益；大则更积极靠近目标。
-    corridor_gain: 0.85                     # 走廊/横向纠偏增益。
+    corridor_gain: 0.35                     # 走廊/横向纠偏增益。
     repulsion_gain: 0.04                    # 障碍排斥增益；大则绕障更强。
     repulsion_cap: 0.50                     # 障碍排斥速度/作用上限。
     automatic_target_retreat_enabled: true  # 人距过近时启用自动后退以恢复跟随距离。
@@ -121,25 +125,20 @@ lidar_alx_assisted_follow:
     target_retreat_exit_distance_m: 1.00    # 人距恢复到此值后退出后退模式。
     target_retreat_speed_mps: 0.10          # 近目标后退的保守平移速度上限。
     target_retreat_probe_distance_m: 0.12   # 近目标后退每帧进行点云验证的前瞻距离。
-    automatic_escape_enabled: true          # 紧急净空触发时，允许点云验证后的自动脱困。
-    escape_speed_mps: 0.08                  # 脱困平移速度上限；仅用于确认安全的反障碍方向。
-    escape_probe_distance_m: 0.20           # 脱困点云扫掠验证距离，覆盖 2 秒内的最大退让并保留余量。
-    escape_max_duration_s: 2.0              # 单次连续脱困最长时间；超时回到硬停止。
+    automatic_escape_enabled: true          # 前方紧急净空触发时，允许点云验证后的自动后退脱困。
+    escape_speed_mps: 0.10                  # 自动后退脱困的速度上限；不允许自动横移。
+    escape_probe_distance_m: 0.35           # 脱困点云扫掠验证距离，覆盖 3 秒内的最大退让并保留余量。
+    escape_max_duration_s: 3.0              # 单次连续脱困最长时间；超时回到硬停止。
     escape_min_clearance_gain_m: 0.02       # 脱困结束时最小净空必须增加的余量。
     omega_gain: 0.80                        # 朝向目标的转向增益。
 
-  # 输出指令限幅与加减速度限制；速度上限应与 g1.* 对齐，避免二次更紧限幅。
+  # 输出指令限幅。关闭斜率限制后，速度指令会直接响应，但仍受以下速度上限和紧急 STOP 保护。
   output_motion:
+    slew_rate_limit_enabled: false          # 不使用加减速度平滑，提升跟随、后退和脱困的响应速度。
     max_vx: 0.9                            # 指令前向速度上限；与 g1.max_vx 一致。
     max_reverse_vx: 0.10                   # 自动脱困和近目标后退可使用的后退速度上限。
     max_abs_vy: 0.45                        # 指令横向速度绝对上限；与 g1.max_abs_vy 一致。
     max_abs_omega: 1.0                     # 指令角速度绝对上限；与 g1.max_abs_omega 一致。
-    accel_vx: 0.15                          # 前向加速度上限，降低起步突兀感。
-    decel_vx: 0.50                          # 前向减速度上限。
-    accel_vy: 0.10                          # 横向加速度上限，降低突然横移。
-    decel_vy: 0.35                          # 横向减速度上限。
-    accel_omega: 0.35                       # 角速度加速度上限，降低急转。
-    decel_omega: 0.80                       # 角速度减速度上限。
 
   # 本地 Web 监控与控制界面参数。
   web:

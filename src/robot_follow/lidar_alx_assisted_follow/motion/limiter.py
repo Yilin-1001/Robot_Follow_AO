@@ -47,6 +47,37 @@ class CommandSlewRateLimiter:
         if now_s is None:
             now_s = time.monotonic()
 
+        if not self.config.slew_rate_limit_enabled:
+            limited_vx = float(
+                np.clip(intent.vx, -self.config.max_reverse_vx, self.config.max_vx)
+            )
+            limited_vy = float(
+                np.clip(
+                    intent.vy,
+                    -self.config.max_abs_vy,
+                    self.config.max_abs_vy,
+                )
+            )
+            limited_omega = float(
+                np.clip(
+                    intent.omega,
+                    -self.config.max_abs_omega,
+                    self.config.max_abs_omega,
+                )
+            )
+            self.last_vx = limited_vx
+            self.last_vy = limited_vy
+            self.last_omega = limited_omega
+            self.last_time_s = now_s
+            return MotionIntent(
+                sequence=intent.sequence,
+                vx=limited_vx,
+                vy=limited_vy,
+                omega=limited_omega,
+                reason=intent.reason,
+                generated_at_s=now_s,
+            )
+
         # First call or after reset
         if self.last_time_s is None:
             self.last_time_s = now_s
