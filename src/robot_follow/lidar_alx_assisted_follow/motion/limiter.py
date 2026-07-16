@@ -93,7 +93,9 @@ class CommandSlewRateLimiter:
         )
 
         # Apply velocity limits
-        limited_vx = float(np.clip(limited_vx, 0.0, self.config.max_vx))
+        limited_vx = float(
+            np.clip(limited_vx, -self.config.max_reverse_vx, self.config.max_vx)
+        )
         limited_vy = float(np.clip(limited_vy, -self.config.max_abs_vy, self.config.max_abs_vy))
         limited_omega = float(np.clip(limited_omega, -self.config.max_abs_omega, self.config.max_abs_omega))
 

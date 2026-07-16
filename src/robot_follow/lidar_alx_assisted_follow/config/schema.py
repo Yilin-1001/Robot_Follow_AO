@@ -348,6 +348,16 @@ class APFConfig:
     corridor_gain: float = 0.50
     repulsion_gain: float = 0.02
     repulsion_cap: float = 0.25
+    automatic_target_retreat_enabled: bool = False
+    target_retreat_start_distance_m: float = 0.85
+    target_retreat_exit_distance_m: float = 1.00
+    target_retreat_speed_mps: float = 0.10
+    target_retreat_probe_distance_m: float = 0.12
+    automatic_escape_enabled: bool = False
+    escape_speed_mps: float = 0.06
+    escape_probe_distance_m: float = 0.08
+    escape_max_duration_s: float = 1.0
+    escape_min_clearance_gain_m: float = 0.02
     candidate_angles_deg: Tuple[float, ...] = (0, 30, -30, 60, -60, 90, -90)
     turn_in_place_bearing_deg: float = 35.0
     omega_gain: float = 0.80
@@ -384,6 +394,38 @@ class APFConfig:
         _validate_non_negative(self.corridor_gain, "apf.corridor_gain")
         _validate_non_negative(self.repulsion_gain, "apf.repulsion_gain")
         _validate_non_negative(self.repulsion_cap, "apf.repulsion_cap")
+        if not isinstance(self.automatic_target_retreat_enabled, bool):
+            raise ValueError("apf.automatic_target_retreat_enabled must be a boolean")
+        _validate_positive(
+            self.target_retreat_start_distance_m,
+            "apf.target_retreat_start_distance_m",
+        )
+        _validate_positive(
+            self.target_retreat_exit_distance_m,
+            "apf.target_retreat_exit_distance_m",
+        )
+        if self.target_retreat_start_distance_m >= self.target_retreat_exit_distance_m:
+            raise ValueError(
+                "apf.target_retreat_start_distance_m must be < "
+                "apf.target_retreat_exit_distance_m"
+            )
+        _validate_positive(
+            self.target_retreat_speed_mps,
+            "apf.target_retreat_speed_mps",
+        )
+        _validate_positive(
+            self.target_retreat_probe_distance_m,
+            "apf.target_retreat_probe_distance_m",
+        )
+        if not isinstance(self.automatic_escape_enabled, bool):
+            raise ValueError("apf.automatic_escape_enabled must be a boolean")
+        _validate_positive(self.escape_speed_mps, "apf.escape_speed_mps")
+        _validate_positive(self.escape_probe_distance_m, "apf.escape_probe_distance_m")
+        _validate_positive(self.escape_max_duration_s, "apf.escape_max_duration_s")
+        _validate_non_negative(
+            self.escape_min_clearance_gain_m,
+            "apf.escape_min_clearance_gain_m",
+        )
         _validate_non_negative(self.turn_in_place_bearing_deg, "apf.turn_in_place_bearing_deg")
         _validate_non_negative(self.omega_gain, "apf.omega_gain")
 
@@ -393,6 +435,7 @@ class OutputMotionConfig:
     """Output motion limiting configuration."""
 
     max_vx: float = 0.10
+    max_reverse_vx: float = 0.0
     max_abs_vy: float = 0.08
     max_abs_omega: float = 0.25
     accel_vx: float = 0.15
@@ -404,6 +447,7 @@ class OutputMotionConfig:
 
     def __post_init__(self) -> None:
         _validate_non_negative(self.max_vx, "output_motion.max_vx")
+        _validate_non_negative(self.max_reverse_vx, "output_motion.max_reverse_vx")
         _validate_non_negative(self.max_abs_vy, "output_motion.max_abs_vy")
         _validate_non_negative(self.max_abs_omega, "output_motion.max_abs_omega")
         _validate_positive(self.accel_vx, "output_motion.accel_vx")

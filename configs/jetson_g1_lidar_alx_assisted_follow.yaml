@@ -1,153 +1,158 @@
-# LiDAR + ALX Assisted Follow Configuration
-# Each new point cloud triggers exactly one matched-ALX follow/avoidance pass.
-# ALX supplies the follow target; LiDAR supplies obstacle points only.
+# LiDAR + ALX 辅助跟随配置。
+# 默认单位：距离 m、时间 s、线速度 m/s、角速度 rad/s、角度 deg、频率 Hz。
+# 每一帧新点云最多触发一次控制；ALX 提供跟随目标，LiDAR 只提供障碍物信息。
 
 lidar_alx_assisted_follow:
+  # ALX-G100 串口、有效距离与时间同步约束。
   alx:
-    port: /dev/ttyUSB0
-    baudrate: 115200
-    stale_timeout_s: 0.50
-    cloud_max_skew_s: 0.08
-    min_distance_m: 0.10
-    max_distance_m: 20.0
+    port: /dev/ttyUSB0                    # ALX 接收器串口设备。
+    baudrate: 115200                       # 串口波特率；须与 ALX 保持一致。
+    stale_timeout_s: 0.50                  # 超过此时间未收到 ALX 数据即视为失效。
+    cloud_max_skew_s: 0.08                 # 点云时间戳与匹配 ALX 样本允许的最大时间差。
+    min_distance_m: 0.10                   # 接受的 ALX 最小测距。
+    max_distance_m: 20.0                   # 接受的 ALX 最大测距。
 
-  # ALX ROS2 outputs.  The position topic carries only filtered body-frame
-  # coordinates; the reliable wristband state topic retains hand-band control
-  # of Livox/FAST-LIO startup and shutdown.
+  # 发布经滤波的 ALX body 坐标及手环状态的 ROS2 节点参数。
   alx_ros:
-    topic: /alx/position
-    wristband_topic: /alx/wristband_state
-    frame_id: body
-    poll_hz: 200.0
-    wristband_publish_hz: 10.0
-    wristband_timeout_s: 0.50
-    kalman_process_noise: 0.05
-    kalman_measurement_noise: 0.25
-    kalman_max_interval_s: 0.20
+    topic: /alx/position                   # 位置 PointStamped 话题。
+    wristband_topic: /alx/wristband_state  # 手环开关状态话题。
+    frame_id: body                          # ALX 坐标系；必须为机器人 body。
+    poll_hz: 200.0                          # 串口轮询频率，不等同于 ALX 实际出帧率。
+    wristband_publish_hz: 10.0              # 手环状态发布频率。
+    wristband_timeout_s: 0.50               # 手环状态失效超时。
+    kalman_process_noise: 0.05              # ALX Kalman 过程噪声；大则跟随变化更快。
+    kalman_measurement_noise: 0.25          # ALX Kalman 测量噪声；大则结果更平滑。
+    kalman_max_interval_s: 0.20             # 超过此帧间隔时重置/限制滤波预测。
 
+  # FAST-LIO 点云输入及 Livox/FAST-LIO 生命周期命令。
   sensors:
-    topic: /cloud_registered_body
-    expected_frame_id: body
-    # FAST-LIO's y axis is mirrored relative to this robot's body convention:
-    # +x forward, +y left.  Flip only LiDAR points; ALX is calibrated separately.
-    cloud_y_sign: -1
-    max_cloud_age_s: 0.25
-    ready_timeout_s: 10.0
-    stop_timeout_s: 3.0
-    livox_start_command: "ros2 launch livox_ros_driver2 msg_MID360_launch.py"
-    fast_lio_start_command: "ros2 launch fast_lio mapping.launch.py config_file:=/home/fk/g1_mid360_ros2_ws/src/FAST_LIO_ROS2/config/mid360.yaml rviz:=false"
+    topic: /cloud_registered_body           # 订阅的 FAST-LIO body 系点云话题。
+    expected_frame_id: body                 # 点云 frame_id；必须为 body。
+    cloud_y_sign: -1                        # 点云 Y 轴符号；-1 表示将 FAST-LIO 的 Y 轴镜像到机器人约定（+Y 向左）。
+    max_cloud_age_s: 0.25                   # 点云从接收到参与控制的最大允许延迟，超时硬停止。
+    ready_timeout_s: 10.0                   # 启动后等待首帧点云的最长时间。
+    stop_timeout_s: 3.0                     # 停止 Livox/FAST-LIO 进程的等待上限。
+    livox_start_command: "ros2 launch livox_ros_driver2 msg_MID360_launch.py" # 启动 MID-360 驱动的命令。
+    fast_lio_start_command: "ros2 launch fast_lio mapping.launch.py config_file:=/home/fk/g1_mid360_ros2_ws/src/FAST_LIO_ROS2/config/mid360.yaml rviz:=false" # 启动 FAST-LIO 的命令。
 
+  # Unitree G1 通信及最终桥接侧的速度上限。
   g1:
-    network_interface: eth0
-    # High-amplitude real-test envelope. Keep these equal to
-    # output_motion.* so the bridge does not apply a second tighter clamp.
-    max_vx: 1.50
-    max_abs_vy: 1.00
-    max_abs_omega: 1.50
-    yaw_sign: 1
-    sdk_timeout_s: 10.0
-    sdk_timeout_code: 3104
-    sdk_timeout_retry_interval_s: 1.0
-    max_consecutive_sdk_timeouts: 3
-    command_timeout_s: 0.50
+    network_interface: eth0                 # G1 SDK 使用的网卡。
+    max_vx: 0.9                            # 前向线速度绝对上限；保守跟随档。
+    max_abs_vy: 0.45                        # 横向线速度绝对上限；保守跟随档。
+    max_abs_omega: 1.0                     # 角速度绝对上限；保守跟随档。
+    yaw_sign: 1                             # 角速度方向；仅可为 +1 或 -1。
+    sdk_timeout_s: 10.0                     # SDK 单次调用超时。
+    sdk_timeout_code: 3104                  # 识别为 SDK 超时的错误码。
+    sdk_timeout_retry_interval_s: 1.0       # SDK 超时后的重试间隔。
+    max_consecutive_sdk_timeouts: 3         # 连续超时达到该次数后停止跟随。
+    command_timeout_s: 0.50                 # 指令有效期/发送超时。
 
+  # 输出模式。real 仍要求 CLI 显式确认，不能仅靠 YAML 放开真实运动。
   output:
-    # Real G1 output. The CLI still requires --confirm-real-g1, and because
-    # calibration below is provisional it also requires
-    # --allow-provisional-calibration for each real-robot launch.
-    mode: real
+    mode: real                              # mock 为仿真输出；real 为真实 G1 输出。
 
+  # 控制循环与策略时延保护。
   runtime:
-    watchdog_hz: 40.0
-    max_strategy_age_s: 0.15
-    max_strategy_process_ms: 20.0
-    control_event_capacity: 32
+    watchdog_hz: 40.0                       # 看门狗频率；只做安全检查，不复用旧点云重算策略。
+    max_strategy_age_s: 0.15                # 策略从点云接收到下发前允许的最大总时延。
+    max_strategy_process_ms: 20.0           # 单帧策略计算超时阈值；超过后不下发非零指令。
+    control_event_capacity: 32              # Web 控制事件有界队列容量。
 
+  # 供避障使用的点云预处理。radial_max_m 只过滤 Python 端处理点，
+  # 不会缩小 LiDAR 原始扫描范围，也不会减少 PointCloud2 接收的数据量。
   target:
-    radial_min_m: 0.25
-    radial_max_m: 5.0
-    # Keep returns from obstacles at least 3 cm above the floor. This retains
-    # low obstacles while rejecting the most likely residual ground returns.
-    physical_height_min_m: 0.03
-    physical_height_max_m: 2.00
-    self_x_min_m: -0.35
-    self_x_max_m: 0.25
-    self_abs_y_max_m: 0.25
-    voxel_size_m: 0.05
-    # LiDAR returns within this radius of the matched ALX target are excluded
-    # from obstacle repulsion, so the tagged wearer is not treated as an obstacle.
-    web_pick_radius_m: 0.35
-    gate_radial_radius_m: 0.45
-    gate_tangential_radius_m: 0.35
-    min_support_points: 8
-    min_vertical_extent_m: 0.45
-    max_horizontal_footprint_m: 0.90
-    max_radial_mad_m: 0.18
-    max_center_displacement_m: 0.35
-    max_frame_interval_s: 0.20
-    kalman_enabled: true
-    kalman_process_noise: 0.10
-    kalman_measurement_noise: 0.05
-    lost_timeout_s: 0.75
-    desired_distance_m: 1.00
-    stop_distance_m: 0.80
+    radial_min_m: 0.25                      # 保留点的最小水平半径，滤除近距离机身噪声。
+    radial_max_m: 3.0                       # 保留点的最大水平半径；3 m 外障碍不参与避障和可视化。
+    physical_height_min_m: 0.03             # 保留点相对地面的最小高度，抑制残余地面点。
+    physical_height_max_m: 2.00             # 保留点相对地面的最大高度。
+    self_x_min_m: -0.35                     # 机身自遮挡框的后边界。
+    self_x_max_m: 0.25                      # 机身自遮挡框的前边界。
+    self_abs_y_max_m: 0.25                  # 机身自遮挡框的左右半宽。
+    voxel_size_m: 0.05                      # 体素下采样边长；增大可明显减少后续点数。
+    web_pick_radius_m: 0.45                 # ALX 手腕标签附近的人体点云排除半径，避免将跟随者作为障碍物。
+    # 以下目标门限/跟踪参数为兼容保留项；通常无需调整。
+    gate_radial_radius_m: 0.45              # 旧目标门限的径向容差。
+    gate_tangential_radius_m: 0.35          # 旧目标门限的切向容差。
+    min_support_points: 8                   # 旧点云目标的最少支撑点数。
+    min_vertical_extent_m: 0.45             # 旧点云目标的最小垂直尺寸。
+    max_horizontal_footprint_m: 0.90        # 旧点云目标的最大水平尺寸。
+    max_radial_mad_m: 0.18                  # 旧点云目标距离离散度上限。
+    max_center_displacement_m: 0.35         # 旧目标相邻帧最大中心位移。
+    max_frame_interval_s: 0.20              # 旧目标跟踪允许的最大帧间隔。
+    kalman_enabled: true                    # 旧点云目标 Kalman 开关。
+    kalman_process_noise: 0.10              # 旧点云目标 Kalman 过程噪声。
+    kalman_measurement_noise: 0.05          # 旧点云目标 Kalman 测量噪声。
+    lost_timeout_s: 0.75                    # 旧点云目标丢失判定超时。
+    desired_distance_m: 1.00                # 旧目标模块期望距离；实际跟随距离请调 apf.*。
+    stop_distance_m: 0.80                   # 旧目标模块停止距离；实际停止距离请调 apf.*。
 
+  # ALX、LiDAR 与机器人 body 坐标的安装/标定参数。
   calibration:
-    x_m: 0.0
-    y_m: 0.0
-    yaw_deg: 0.0
-    azimuth_sign: 1
-    azimuth_zero_offset_deg: 0.0
-    lidar_height_m: 1.25
-    alx_height_m: 1.10
-    allow_provisional_calibration_for_prototype: true
+    x_m: 0.0                                # ALX 相对 body 原点的 X 平移。
+    y_m: 0.0                                # ALX 相对 body 原点的 Y 平移。
+    yaw_deg: 0.0                            # ALX 相对 body 的偏航角。
+    azimuth_sign: 1                         # ALX 方位角方向；仅可为 +1 或 -1。
+    azimuth_zero_offset_deg: 0.0            # ALX 方位角零点偏移。
+    lidar_height_m: 1.25                    # LiDAR 离地高度，用于将 z 转为物理高度。
+    alx_height_m: 1.10                      # ALX 接收器离地高度。
+    allow_provisional_calibration_for_prototype: true # 标定暂定时允许启动；真实输出仍须 CLI 二次确认。
 
+  # 人体跟随吸引力与 LiDAR 障碍规避（APF）参数。
   apf:
-    target_desired_distance_m: 1.00
-    target_stop_distance_m: 0.80
-    # Begin continuous APF response at about 1.8 m. The robot-local rectangle
-    # below produces a strong left/right sidestep for obstacles in its path;
-    # only the body-clearance boundary produces an immediate stop.
-    non_target_influence_m: 1.80
-    non_target_hard_stop_clearance_m: 0.25
-    slowdown_clearance_m: 0.60
-    body_half_length_m: 0.30
-    body_half_width_m: 0.25
-    swept_margin_m: 0.10
-    lateral_avoidance_length_m: 1.80
-    lateral_avoidance_half_width_m: 0.80
-    swept_min_distance_m: 0.40
-    swept_horizon_s: 1.00
-    attraction_gain: 0.60
-    corridor_gain: 0.85
-    repulsion_gain: 0.04
-    repulsion_cap: 0.50
-    omega_gain: 0.80
+    target_desired_distance_m: 1.00         # 与 ALX 目标保持的期望距离。
+    target_stop_distance_m: 0.80            # 小于该距离时停止靠近目标。
+    non_target_influence_m: 1.80            # 非目标障碍开始产生连续规避作用的距离。
+    non_target_hard_stop_clearance_m: 0.25  # 侵入机身紧急净空时硬停止。
+    slowdown_clearance_m: 0.60              # 障碍靠近时开始减速的净空距离。
+    body_half_length_m: 0.30                # 机器人机身半长。
+    body_half_width_m: 0.225                # 机器人机身半宽；对应 450 mm 肩宽的一半。
+    swept_margin_m: 0.10                    # 运动扫掠区域附加安全边界。
+    lateral_avoidance_length_m: 1.80        # 前方横移避障矩形长度。
+    lateral_avoidance_half_width_m: 0.45    # 横移避障矩形半宽（总宽=半宽*2）。
+    swept_min_distance_m: 0.40              # 扫掠检测的最小净空。
+    swept_horizon_s: 1.00                   # 扫掠检测的预测时间窗。
+    attraction_gain: 0.60                   # 目标吸引增益；大则更积极靠近目标。
+    corridor_gain: 0.85                     # 走廊/横向纠偏增益。
+    repulsion_gain: 0.04                    # 障碍排斥增益；大则绕障更强。
+    repulsion_cap: 0.50                     # 障碍排斥速度/作用上限。
+    automatic_target_retreat_enabled: true  # 人距过近时启用自动后退以恢复跟随距离。
+    target_retreat_start_distance_m: 0.85   # 人距低于此值进入后退模式。
+    target_retreat_exit_distance_m: 1.00    # 人距恢复到此值后退出后退模式。
+    target_retreat_speed_mps: 0.10          # 近目标后退的保守平移速度上限。
+    target_retreat_probe_distance_m: 0.12   # 近目标后退每帧进行点云验证的前瞻距离。
+    automatic_escape_enabled: true          # 紧急净空触发时，允许点云验证后的自动脱困。
+    escape_speed_mps: 0.08                  # 脱困平移速度上限；仅用于确认安全的反障碍方向。
+    escape_probe_distance_m: 0.20           # 脱困点云扫掠验证距离，覆盖 2 秒内的最大退让并保留余量。
+    escape_max_duration_s: 2.0              # 单次连续脱困最长时间；超时回到硬停止。
+    escape_min_clearance_gain_m: 0.02       # 脱困结束时最小净空必须增加的余量。
+    omega_gain: 0.80                        # 朝向目标的转向增益。
 
+  # 输出指令限幅与加减速度限制；速度上限应与 g1.* 对齐，避免二次更紧限幅。
   output_motion:
-    # High-amplitude real-test profile. These limits deliberately match
-    # g1.* above so the limiter and final G1 bridge agree on the command
-    # envelope.
-    max_vx: 1.50
-    max_abs_vy: 1.00
-    max_abs_omega: 1.50
-    accel_vx: 0.30
-    decel_vx: 0.50
-    accel_vy: 0.25
-    decel_vy: 0.50
-    accel_omega: 0.90
-    decel_omega: 1.40
+    max_vx: 0.9                            # 指令前向速度上限；与 g1.max_vx 一致。
+    max_reverse_vx: 0.10                   # 自动脱困和近目标后退可使用的后退速度上限。
+    max_abs_vy: 0.45                        # 指令横向速度绝对上限；与 g1.max_abs_vy 一致。
+    max_abs_omega: 1.0                     # 指令角速度绝对上限；与 g1.max_abs_omega 一致。
+    accel_vx: 0.15                          # 前向加速度上限，降低起步突兀感。
+    decel_vx: 0.50                          # 前向减速度上限。
+    accel_vy: 0.10                          # 横向加速度上限，降低突然横移。
+    decel_vy: 0.35                          # 横向减速度上限。
+    accel_omega: 0.35                       # 角速度加速度上限，降低急转。
+    decel_omega: 0.80                       # 角速度减速度上限。
 
+  # 本地 Web 监控与控制界面参数。
   web:
-    host: 127.0.0.1
-    port: 8080
-    max_clients: 8
-    max_message_bytes: 4096
-    max_events_per_second: 20.0
-    status_hz: 10.0
-    max_visualization_points: 5000
+    host: 127.0.0.1                         # 监听地址；改为非本机地址需 CLI 显式授权。
+    port: 8080                               # Web 端口；可被 CLI --port 覆盖。
+    max_clients: 8                           # 最大 WebSocket 客户端数。
+    max_message_bytes: 4096                  # 单个客户端控制消息的最大字节数。
+    max_events_per_second: 20.0              # 单客户端控制事件限速。
+    status_hz: 10.0                          # 期望状态推送频率（当前服务端实现固定为 10 Hz）。
+    max_visualization_points: 3000           # 单帧送往 Web 可视化的最多点数；不影响避障计算。
 
+  # 运行 CSV 日志；不记录原始点云。
   logging:
-    enabled: true
-    csv_path: logs/lidar_alx_assisted_follow.csv
-    flush_interval_s: 1.0
+    enabled: true                            # 是否写入 CSV 策略/安全事件日志。
+    csv_path: logs/lidar_alx_assisted_follow.csv # CSV 相对或绝对路径。
+    flush_interval_s: 1.0                    # CSV 刷盘间隔；更小更实时但 I/O 开销更高。

@@ -30,7 +30,11 @@ from robot_follow.lidar_alx_assisted_follow.domain.models import (
     StopSnapshot,
     StrategyResult,
 )
-from robot_follow.lidar_alx_assisted_follow.motion.apf import APFInput, compute_apf
+from robot_follow.lidar_alx_assisted_follow.motion.apf import (
+    APFInput,
+    APFResult,
+    compute_apf,
+)
 from robot_follow.lidar_alx_assisted_follow.motion.dispatch import (
     G1BridgeProtocol,
     dispatch_strategy_or_stop,
@@ -120,6 +124,17 @@ class RuntimeState:
     # topic.  This lets OFF/Fault stop managed services even if the lifecycle
     # was already in WRISTBAND_OFF because of an earlier partial startup.
     last_wristband_control_state: Optional[WristbandTopicState] = None
+
+    # Automatic escape always begins with a zero-velocity braking frame.  The
+    # timer bounds how long a continuous escape may persist.
+    escape_armed: bool = False
+    escape_started_at_s: Optional[float] = None
+
+    # Hysteresis for keeping distance from a nearby ALX target.  This is
+    # separate from obstacle escape so a close person does not become an APF
+    # obstacle or cause a forward/reverse oscillation.
+    target_retreat_active: bool = False
+    target_retreat_armed: bool = False
 
 
 @dataclass
@@ -271,6 +286,8 @@ class LidarALXAssistedFollowRuntime:
 
         elif event.kind == ControlEventKind.STOP_FOLLOW:
             self._state.follow_enabled = False
+            self._state.target_retreat_active = False
+            self._state.target_retreat_armed = False
             self._state.last_start_result = StartResult(
                 state=StartState.IDLE,
                 reason="user_stop",
@@ -307,6 +324,8 @@ class LidarALXAssistedFollowRuntime:
 
         self.stop_latch.clear_for_start(start_after_sequence)
         self._state.follow_enabled = True
+        self._state.target_retreat_active = False
+        self._state.target_retreat_armed = False
         self._state.last_start_result = StartResult(
             state=StartState.ACCEPTED,
             reason=None,
@@ -459,6 +478,8 @@ class LidarALXAssistedFollowRuntime:
     def _disable_follow_for_safety(self, reason: str) -> None:
         """Revoke Web enable after a hard physical safety condition."""
         self._state.follow_enabled = False
+        self._state.target_retreat_active = False
+        self._state.target_retreat_armed = False
         self._state.last_start_result = StartResult(
             state=StartState.IDLE,
             reason=reason,
@@ -587,6 +608,12 @@ class LidarALXAssistedFollowRuntime:
             self._log_strategy_zero(cloud, "follow_disabled", now, preprocessed)
             return
 
+        target_distance = float(np.linalg.norm(alx_body_xy))
+        if target_distance < self.config.apf.target_retreat_start_distance_m:
+            self._state.target_retreat_active = True
+        elif target_distance >= self.config.apf.target_retreat_exit_distance_m:
+            self._state.target_retreat_active = False
+
         target_mask = self._alx_target_mask(preprocessed, alx_body_xy)
 
         # Run APF
@@ -596,9 +623,12 @@ class LidarALXAssistedFollowRuntime:
             target_mask=target_mask,
             sequence=cloud.sequence,
             alx_body_xy=alx_body_xy,
+            target_retreat_active=self._state.target_retreat_active,
         )
 
         apf_result = compute_apf(apf_input, self.config.apf, self.config.output_motion)
+        apf_result = self._guard_automatic_escape(apf_result, cloud.sequence, now)
+        apf_result = self._guard_target_retreat(apf_result, cloud.sequence, now)
 
         compute_ms = (time.monotonic() - compute_start) * 1000.0
         strategy_result = StrategyResult(
@@ -704,6 +734,77 @@ class LidarALXAssistedFollowRuntime:
             calibration_status="provisional",
         )
         self._publish_status(cloud, preprocessed, now_s=now)
+
+    def _guard_automatic_escape(
+        self,
+        apf_result: APFResult,
+        sequence: int,
+        now: float,
+    ) -> APFResult:
+        """Brake before escape and hard-stop if its bounded window expires."""
+        if apf_result.intent.reason != "automatic_escape":
+            self._state.escape_armed = False
+            self._state.escape_started_at_s = None
+            return apf_result
+
+        # A zero command is sent first, which resets the limiter and prevents
+        # an existing forward command from carrying into a reverse escape.
+        if not self._state.escape_armed:
+            self._state.escape_armed = True
+            return APFResult(
+                intent=MotionIntent(
+                    sequence=sequence,
+                    vx=0.0,
+                    vy=0.0,
+                    omega=0.0,
+                    reason="automatic_escape_brake",
+                    generated_at_s=now,
+                ),
+                stop_reason=None,
+            )
+
+        if self._state.escape_started_at_s is None:
+            self._state.escape_started_at_s = now
+        elif now - self._state.escape_started_at_s > self.config.apf.escape_max_duration_s:
+            return APFResult(
+                intent=MotionIntent(
+                    sequence=sequence,
+                    vx=0.0,
+                    vy=0.0,
+                    omega=0.0,
+                    reason="automatic_escape_timeout",
+                    generated_at_s=now,
+                ),
+                stop_reason=StopReason.NON_TARGET_HARD_CLEARANCE,
+            )
+        return apf_result
+
+    def _guard_target_retreat(
+        self,
+        apf_result: APFResult,
+        sequence: int,
+        now: float,
+    ) -> APFResult:
+        """Brake before changing an existing forward command into a retreat."""
+        if apf_result.intent.reason != "target_retreat":
+            self._state.target_retreat_armed = False
+            return apf_result
+
+        if self._state.target_retreat_armed:
+            return apf_result
+
+        self._state.target_retreat_armed = True
+        return APFResult(
+            intent=MotionIntent(
+                sequence=sequence,
+                vx=0.0,
+                vy=0.0,
+                omega=0.0,
+                reason="target_retreat_brake",
+                generated_at_s=now,
+            ),
+            stop_reason=None,
+        )
 
     def _alx_target_mask(
         self, cloud: PreprocessedCloud, alx_body_xy: np.ndarray
@@ -959,4 +1060,8 @@ class LidarALXAssistedFollowRuntime:
             return MotionState.WAITING_ALX
         if strategy is not None and strategy.stop_reason is not None:
             return MotionState.BLOCKED_OBSTACLE
+        if strategy is not None and strategy.apf_requested.reason.startswith("target_retreat"):
+            return MotionState.TARGET_RETREAT
+        if strategy is not None and strategy.apf_requested.reason.startswith("automatic_escape"):
+            return MotionState.ESCAPING
         return MotionState.FOLLOWING

@@ -115,8 +115,8 @@ class TestBasicLimiting:
         assert limited.vy == config.max_abs_vy
         assert limited.omega == config.max_abs_omega
 
-    def test_negative_vx_is_clipped_to_zero(self):
-        """Negative vx should be clipped to zero (no reverse)."""
+    def test_negative_vx_is_clipped_to_zero_without_reverse_permission(self):
+        """Negative vx stays disabled unless max_reverse_vx explicitly permits it."""
         config = OutputMotionConfig(
             max_vx=0.10,
             accel_vx=10.0,
@@ -138,6 +138,24 @@ class TestBasicLimiting:
 
         # vx should be zero (no reverse allowed)
         assert limited.vx == 0.0
+
+    def test_negative_vx_is_clipped_to_configured_reverse_limit(self):
+        """Automatic escape may use only the explicitly configured reverse cap."""
+        config = OutputMotionConfig(
+            max_vx=0.10,
+            max_reverse_vx=0.06,
+            accel_vx=10.0,
+            decel_vx=10.0,
+            accel_vy=10.0,
+            decel_vy=10.0,
+            accel_omega=10.0,
+            decel_omega=10.0,
+        )
+        limiter = CommandSlewRateLimiter(config=config)
+        now_s = time.monotonic()
+        limiter.limit(make_intent(vx=-0.10), now_s=now_s)
+        limited = limiter.limit(make_intent(vx=-0.10), now_s=now_s + 1.0)
+        assert limited.vx == -0.06
 
 
 class TestTimeClamping:

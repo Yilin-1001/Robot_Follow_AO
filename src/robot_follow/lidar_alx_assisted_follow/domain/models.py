@@ -85,6 +85,8 @@ class MotionState(str, Enum):
     WAITING_LIDAR = "waiting_lidar"
     WAITING_ALX = "waiting_alx"
     FOLLOWING = "following"
+    TARGET_RETREAT = "target_retreat"
+    ESCAPING = "escaping"
     BLOCKED_OBSTACLE = "blocked_obstacle"
     SAFETY_STOP = "safety_stop"
 

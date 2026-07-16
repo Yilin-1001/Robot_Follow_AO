@@ -49,6 +49,60 @@ def test_target_at_stop_distance_stops() -> None:
     assert result.intent.vx == result.intent.vy == result.intent.omega == 0.0
 
 
+def test_close_target_retreats_at_configured_conservative_speed() -> None:
+    """A nearby ALX target causes verified distance-recovery retreat, not APF circling."""
+    result = compute_apf(
+        make_input(
+            np.array([[0.70, 0.0, 0.2]]),
+            target=(0.70, 0.0),
+            target_mask=np.array([True]),
+        ),
+        APFConfig(
+            automatic_target_retreat_enabled=True,
+            target_retreat_start_distance_m=0.85,
+            target_retreat_exit_distance_m=1.00,
+            target_retreat_speed_mps=0.10,
+        ),
+        OutputMotionConfig(max_reverse_vx=0.10),
+    )
+    assert result.stop_reason is None
+    assert result.intent.reason == "target_retreat"
+    assert result.intent.vx == -0.10
+    assert result.intent.vy == 0.0
+
+
+def test_active_target_retreat_continues_until_exit_distance() -> None:
+    """The runtime hysteresis flag keeps retreat active between 0.85 m and 1.0 m."""
+    input_data = make_input(
+        np.array([[0.90, 0.0, 0.2]]),
+        target=(0.90, 0.0),
+        target_mask=np.array([True]),
+    )
+    input_data = APFInput(**{**input_data.__dict__, "target_retreat_active": True})
+    result = compute_apf(
+        input_data,
+        APFConfig(automatic_target_retreat_enabled=True),
+        OutputMotionConfig(max_reverse_vx=0.10),
+    )
+    assert result.stop_reason is None
+    assert result.intent.reason == "target_retreat"
+
+
+def test_close_target_retreat_stops_when_rear_path_is_blocked() -> None:
+    """A close person alone is not a stop; an unsafe reverse sweep is."""
+    result = compute_apf(
+        make_input(
+            np.array([[0.70, 0.0, 0.2], [-0.45, 0.0, 0.2]]),
+            target=(0.70, 0.0),
+            target_mask=np.array([True, False]),
+        ),
+        APFConfig(automatic_target_retreat_enabled=True),
+        OutputMotionConfig(max_reverse_vx=0.10),
+    )
+    assert result.stop_reason == StopReason.TARGET_TOO_CLOSE
+    assert result.intent.vx == 0.0
+
+
 def test_clear_target_generates_forward_follow_command() -> None:
     result = compute_apf(
         make_input(np.array([[1.5, 0.0, 0.2]]), target_mask=np.array([True])),
@@ -151,6 +205,55 @@ def test_emergency_body_clearance_still_stops() -> None:
     )
     assert result.stop_reason == StopReason.NON_TARGET_HARD_CLEARANCE
     assert result.intent.vx == result.intent.vy == result.intent.omega == 0.0
+
+
+def test_hard_clearance_uses_safe_automatic_escape_away_from_front_obstacle() -> None:
+    """A clear rear path permits only a low-speed retreat."""
+    result = compute_apf(
+        make_input(
+            np.array([[1.5, 0.0, 0.2], [0.50, 0.0, 0.2]]),
+            target_mask=np.array([True, False]),
+        ),
+        APFConfig(
+            non_target_hard_stop_clearance_m=0.25,
+            automatic_escape_enabled=True,
+            escape_speed_mps=0.08,
+            escape_probe_distance_m=0.08,
+            escape_min_clearance_gain_m=0.02,
+        ),
+        OutputMotionConfig(
+            max_vx=0.20,
+            max_reverse_vx=0.08,
+            max_abs_vy=0.12,
+            max_abs_omega=0.45,
+        ),
+    )
+    assert result.stop_reason is None
+    assert result.intent.reason == "automatic_escape"
+    assert result.intent.vx == -0.08
+    assert result.intent.vy == 0.0
+
+
+def test_automatic_escape_refuses_to_move_toward_rear_obstacle() -> None:
+    """A point behind the robot invalidates the backward escape sweep."""
+    result = compute_apf(
+        make_input(
+            np.array(
+                [[1.5, 0.0, 0.2], [0.50, 0.0, 0.2], [-0.45, 0.0, 0.2]]
+            ),
+            target_mask=np.array([True, False, False]),
+        ),
+        APFConfig(
+            non_target_hard_stop_clearance_m=0.25,
+            automatic_escape_enabled=True,
+            escape_speed_mps=0.08,
+            escape_probe_distance_m=0.08,
+            escape_min_clearance_gain_m=0.02,
+        ),
+        OutputMotionConfig(max_reverse_vx=0.08),
+    )
+    assert result.stop_reason == StopReason.NON_TARGET_HARD_CLEARANCE
+    assert result.intent.vx == 0.0
 
 
 def test_target_bearing_is_fused_as_yaw_while_translating() -> None:

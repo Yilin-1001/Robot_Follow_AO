@@ -38,6 +38,7 @@ class APFInput:
     target_mask: np.ndarray  # ALX target returns, excluded from obstacle terms
     sequence: int
     alx_body_xy: Optional[np.ndarray] = None
+    target_retreat_active: bool = False
     # Transitional constructor compatibility for offline callers. It is not a
     # motion gate in the direct-ALX pipeline.
     confidence: object | None = None
@@ -68,14 +69,39 @@ def compute_apf(
 
     target_xy = np.asarray(input_data.target_center_xy, dtype=np.float64)
     target_distance = float(np.linalg.norm(target_xy))
+    obstacles = _get_non_target_points(input_data.cloud.points_xyz, input_data.target_mask)
+    if config.automatic_target_retreat_enabled and (
+        input_data.target_retreat_active
+        or target_distance < config.target_retreat_start_distance_m
+    ):
+        retreat_intent = _safe_target_retreat_intent(
+            target_xy,
+            obstacles,
+            input_data.sequence,
+            config,
+            output_config,
+        )
+        if retreat_intent is not None:
+            return APFResult(retreat_intent, stop_reason=None)
+        return APFResult(
+            _zero_intent(input_data.sequence), StopReason.TARGET_TOO_CLOSE
+        )
+
     if target_distance <= config.target_stop_distance_m:
         return APFResult(
             _zero_intent(input_data.sequence), StopReason.TARGET_TOO_CLOSE
         )
 
-    obstacles = _get_non_target_points(input_data.cloud.points_xyz, input_data.target_mask)
     min_clearance = _minimum_body_clearance(obstacles, config)
     if min_clearance <= config.non_target_hard_stop_clearance_m:
+        escape_intent = _safe_escape_intent(
+            obstacles,
+            input_data.sequence,
+            config,
+            output_config,
+        )
+        if escape_intent is not None:
+            return APFResult(escape_intent, stop_reason=None)
         return APFResult(
             _zero_intent(input_data.sequence), StopReason.NON_TARGET_HARD_CLEARANCE
         )
@@ -154,6 +180,151 @@ def _minimum_body_clearance(obstacles: np.ndarray, config: APFConfig) -> float:
     if len(obstacles) == 0:
         return float("inf")
     return min(_compute_body_clearance(point[:2], config) for point in obstacles)
+
+
+def _safe_escape_intent(
+    obstacles: np.ndarray,
+    sequence: int,
+    config: APFConfig,
+    output_config: OutputMotionConfig,
+) -> Optional[MotionIntent]:
+    """Build an escape command only if a short point-cloud sweep is safe.
+
+    The nearest emergency obstacle defines the direction away from contact.
+    Any candidate that decreases clearance to a measured point, or crosses
+    into the emergency zone for a previously safe point, is rejected.
+    """
+    if not config.automatic_escape_enabled or obstacles.size == 0:
+        return None
+
+    obstacle_xy = obstacles[:, :2]
+    clearances = np.array(
+        [_compute_body_clearance(point, config) for point in obstacle_xy],
+        dtype=np.float64,
+    )
+    critical_point = obstacle_xy[int(np.argmin(clearances))]
+    distance = float(np.linalg.norm(critical_point))
+    if distance <= 1e-6:
+        return None
+
+    direction = -critical_point / distance
+    if not _escape_path_is_safe(
+        obstacle_xy,
+        clearances,
+        direction,
+        config,
+        config.escape_probe_distance_m,
+    ):
+        return None
+
+    velocity_xy = direction * config.escape_speed_mps
+    vx = float(np.clip(velocity_xy[0], -output_config.max_reverse_vx, output_config.max_vx))
+    vy = float(
+        np.clip(
+            velocity_xy[1],
+            -output_config.max_abs_vy,
+            output_config.max_abs_vy,
+        )
+    )
+    if math.hypot(vx, vy) <= 1e-6:
+        return None
+
+    return MotionIntent(
+        sequence=sequence,
+        vx=vx,
+        vy=vy,
+        omega=0.0,
+        reason="automatic_escape",
+        generated_at_s=time.monotonic(),
+    )
+
+
+def _safe_target_retreat_intent(
+    target_xy: np.ndarray,
+    obstacles: np.ndarray,
+    sequence: int,
+    config: APFConfig,
+    output_config: OutputMotionConfig,
+) -> Optional[MotionIntent]:
+    """Retreat from a too-close ALX target only along a verified clear path."""
+    target_distance = float(np.linalg.norm(target_xy))
+    if target_distance <= 1e-6:
+        return None
+
+    direction = -target_xy / target_distance
+    if obstacles.size:
+        obstacle_xy = obstacles[:, :2]
+        clearances = np.array(
+            [_compute_body_clearance(point, config) for point in obstacle_xy],
+            dtype=np.float64,
+        )
+        if not _escape_path_is_safe(
+            obstacle_xy,
+            clearances,
+            direction,
+            config,
+            config.target_retreat_probe_distance_m,
+        ):
+            return None
+
+    velocity_xy = direction * config.target_retreat_speed_mps
+    vx = float(np.clip(velocity_xy[0], -output_config.max_reverse_vx, output_config.max_vx))
+    vy = float(
+        np.clip(
+            velocity_xy[1],
+            -output_config.max_abs_vy,
+            output_config.max_abs_vy,
+        )
+    )
+    if math.hypot(vx, vy) <= 1e-6:
+        return None
+
+    return MotionIntent(
+        sequence=sequence,
+        vx=vx,
+        vy=vy,
+        omega=0.0,
+        reason="target_retreat",
+        generated_at_s=time.monotonic(),
+    )
+
+
+def _escape_path_is_safe(
+    obstacle_xy: np.ndarray,
+    initial_clearances: np.ndarray,
+    direction: np.ndarray,
+    config: APFConfig,
+    probe_distance_m: float,
+) -> bool:
+    """Verify a short translational sweep against all observed obstacles."""
+    hard_clearance = config.non_target_hard_stop_clearance_m
+    endpoint_min_clearance = float("-inf")
+
+    for fraction in (0.25, 0.50, 0.75, 1.00):
+        displacement = direction * probe_distance_m * fraction
+        future_clearances = np.array(
+            [
+                _compute_body_clearance(point - displacement, config)
+                for point in obstacle_xy
+            ],
+            dtype=np.float64,
+        )
+
+        # A retreat must not reduce clearance to any observed point.
+        if np.any(future_clearances + 1e-6 < initial_clearances):
+            return False
+
+        # A point initially outside the emergency boundary must remain outside.
+        previously_safe = initial_clearances > hard_clearance
+        if np.any(future_clearances[previously_safe] <= hard_clearance):
+            return False
+
+        if fraction == 1.00:
+            endpoint_min_clearance = float(np.min(future_clearances))
+
+    return endpoint_min_clearance >= (
+        hard_clearance + config.escape_min_clearance_gain_m
+    )
 
 
 def _compute_body_clearance(point_xy: np.ndarray, config: APFConfig) -> float:
