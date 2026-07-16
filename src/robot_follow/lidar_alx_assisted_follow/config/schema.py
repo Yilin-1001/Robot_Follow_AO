@@ -340,6 +340,8 @@ class APFConfig:
     body_half_length_m: float = 0.30
     body_half_width_m: float = 0.25
     swept_margin_m: float = 0.10
+    lateral_avoidance_length_m: float = 1.20
+    lateral_avoidance_half_width_m: float = 0.60
     swept_min_distance_m: float = 0.40
     swept_horizon_s: float = 1.00
     attraction_gain: float = 0.60
@@ -369,6 +371,13 @@ class APFConfig:
         _validate_non_negative(self.body_half_length_m, "apf.body_half_length_m")
         _validate_non_negative(self.body_half_width_m, "apf.body_half_width_m")
         _validate_non_negative(self.swept_margin_m, "apf.swept_margin_m")
+        _validate_positive(
+            self.lateral_avoidance_length_m, "apf.lateral_avoidance_length_m"
+        )
+        _validate_positive(
+            self.lateral_avoidance_half_width_m,
+            "apf.lateral_avoidance_half_width_m",
+        )
         _validate_positive(self.swept_min_distance_m, "apf.swept_min_distance_m")
         _validate_positive(self.swept_horizon_s, "apf.swept_horizon_s")
         _validate_non_negative(self.attraction_gain, "apf.attraction_gain")

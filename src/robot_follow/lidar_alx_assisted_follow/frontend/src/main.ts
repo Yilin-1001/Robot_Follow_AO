@@ -16,6 +16,13 @@ interface StatusFrame {
   frame_id: string;
   points: Point3D[];
   target_exclusion?: { kind: string; center_xy: [number, number]; radius_m: number } | null;
+  lateral_avoidance_zone?: {
+    kind: string;
+    x_min_m: number;
+    x_max_m: number;
+    y_min_m: number;
+    y_max_m: number;
+  } | null;
   alx?: {
     body_xy: [number, number] | null;
     age_s: number | null;
@@ -45,6 +52,7 @@ const GRID_COLOR = "#21262d";
 const POINT_COLOR = "#9fdcff";
 const ALX_COLOR = "#3fb950";
 const EXCLUSION_COLOR = "#bc8cff";
+const AVOIDANCE_ZONE_COLOR = "#f0b429";
 const MAX_SCALE = 80;
 const MIN_SCALE = 28;
 const VIEWPORT_PADDING_PX = 28;
@@ -199,6 +207,7 @@ class LiDARMonitor {
     this.drawALXTrail();
     if (this.latestFrame) {
       this.drawPoints(this.latestFrame.points);
+      if (this.latestFrame.lateral_avoidance_zone) this.drawLateralAvoidanceZone(this.latestFrame.lateral_avoidance_zone);
       if (this.latestFrame.target_exclusion) this.drawExclusion(this.latestFrame.target_exclusion);
       const alx = this.latestFrame.alx;
       if (alx?.body_xy) this.drawALX(alx.body_xy, alx.synchronized);
@@ -223,6 +232,28 @@ class LiDARMonitor {
     const viewport = this.getViewport(); const center = this.toCanvas({ x: exclusion.center_xy[0], y: exclusion.center_xy[1] }, viewport);
     this.ctx.strokeStyle = EXCLUSION_COLOR; this.ctx.lineWidth = 2; this.ctx.setLineDash([5, 4]);
     this.ctx.beginPath(); this.ctx.arc(center.x, center.y, exclusion.radius_m * viewport.scale, 0, 2 * Math.PI); this.ctx.stroke(); this.ctx.setLineDash([]);
+  }
+
+  private drawLateralAvoidanceZone(zone: { x_min_m: number; x_max_m: number; y_min_m: number; y_max_m: number }): void {
+    const viewport = this.getViewport();
+    const topLeft = this.toCanvas({ x: zone.x_max_m, y: zone.y_max_m }, viewport);
+    const bottomRight = this.toCanvas({ x: zone.x_min_m, y: zone.y_min_m }, viewport);
+    const left = Math.min(topLeft.x, bottomRight.x);
+    const top = Math.min(topLeft.y, bottomRight.y);
+    const width = Math.abs(bottomRight.x - topLeft.x);
+    const height = Math.abs(bottomRight.y - topLeft.y);
+    this.ctx.save();
+    this.ctx.fillStyle = "rgba(240, 180, 41, 0.08)";
+    this.ctx.strokeStyle = AVOIDANCE_ZONE_COLOR;
+    this.ctx.lineWidth = 1.5;
+    this.ctx.setLineDash([6, 4]);
+    this.ctx.fillRect(left, top, width, height);
+    this.ctx.strokeRect(left, top, width, height);
+    this.ctx.setLineDash([]);
+    this.ctx.font = "11px monospace";
+    this.ctx.fillStyle = AVOIDANCE_ZONE_COLOR;
+    this.ctx.fillText("LATERAL AVOIDANCE · 1.8 m", left + 5, top + 14);
+    this.ctx.restore();
   }
 
   private drawALXTrail(): void {

@@ -88,10 +88,10 @@ def compute_apf(
     vx_target = 0.0 if abs(forward_error) < 0.05 else config.attraction_gain * forward_error
     omega = config.omega_gain * math.atan2(float(target_xy[1]), float(target_xy[0]))
 
-    # 2. Target corridor centering: find the closest inward obstacle on each
-    # side of the body-to-target corridor. An obstacle on the right produces a
-    # positive vy (move left), and vice versa.
-    vy_corridor = _corridor_lateral_velocity(target_xy, obstacles, config)
+    # 2. Lateral avoidance: points in the configured robot-local rectangle
+    # steer sideways before they enter the near-field APF zone. An obstacle on
+    # the right produces positive vy (move left), and vice versa.
+    vy_corridor = _corridor_lateral_velocity(obstacles, config)
 
     # 3. APF repulsion: sum inverse-distance repulsive velocity contributions
     # inside the influence radius, then cap their resultant magnitude.
@@ -164,26 +164,22 @@ def _compute_body_clearance(point_xy: np.ndarray, config: APFConfig) -> float:
 
 
 def _corridor_lateral_velocity(
-    target_xy: np.ndarray,
     obstacles: np.ndarray,
     config: APFConfig,
 ) -> float:
-    """Compute jie_deamon-style lateral centering within the target corridor."""
-    target_distance = float(np.linalg.norm(target_xy))
-    if target_distance < 1e-6:
-        return 0.0
-
-    forward = target_xy / target_distance
-    left_normal = np.array([-forward[1], forward[0]], dtype=np.float64)
-    half_width = config.body_half_width_m + config.swept_margin_m
+    """Compute lateral centering in the robot-local avoidance rectangle."""
+    half_width = config.lateral_avoidance_half_width_m
     left_inner = -half_width
     right_inner = half_width
 
     for point in obstacles:
         xy = point[:2]
-        longitudinal = float(xy @ forward)
-        lateral = float(xy @ left_normal)
-        if 0.0 <= longitudinal <= target_distance and abs(lateral) <= half_width:
+        longitudinal = float(xy[0])
+        lateral = float(xy[1])
+        if (
+            0.0 <= longitudinal <= config.lateral_avoidance_length_m
+            and abs(lateral) <= half_width
+        ):
             if lateral > 0.0:
                 left_inner = max(left_inner, lateral)
             else:

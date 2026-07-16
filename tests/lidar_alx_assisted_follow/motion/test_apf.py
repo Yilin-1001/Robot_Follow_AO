@@ -85,6 +85,42 @@ def test_left_corridor_obstacle_steers_right_instead_of_stopping() -> None:
     assert result.intent.vy < 0.0
 
 
+def test_obstacle_at_1_8m_in_lateral_avoidance_rectangle_steers_sideways() -> None:
+    """The long-range robot-local zone begins a sidestep before near-field APF."""
+    points = np.array([[2.5, 0.0, 0.2], [1.75, -0.20, 0.2]])
+    result = compute_apf(
+        make_input(points, target=(2.5, 0.0), target_mask=np.array([True, False])),
+        APFConfig(
+            non_target_influence_m=1.8,
+            lateral_avoidance_length_m=1.8,
+            lateral_avoidance_half_width_m=0.8,
+            non_target_hard_stop_clearance_m=0.25,
+            slowdown_clearance_m=0.60,
+        ),
+        default_output(),
+    )
+    assert result.stop_reason is None
+    assert result.intent.vy > 0.0
+
+
+def test_obstacle_outside_lateral_avoidance_rectangle_does_not_create_sidestep() -> None:
+    points = np.array([[2.5, 0.0, 0.2], [1.81, -0.20, 0.2]])
+    result = compute_apf(
+        make_input(points, target=(2.5, 0.0), target_mask=np.array([True, False])),
+        APFConfig(
+            non_target_influence_m=1.8,
+            lateral_avoidance_length_m=1.8,
+            lateral_avoidance_half_width_m=0.8,
+            repulsion_gain=0.0,
+            non_target_hard_stop_clearance_m=0.25,
+            slowdown_clearance_m=0.60,
+        ),
+        default_output(),
+    )
+    assert result.stop_reason is None
+    assert result.intent.vy == 0.0
+
+
 def test_obstacle_reduces_forward_speed_but_keeps_lateral_authority() -> None:
     clear = compute_apf(
         make_input(np.array([[1.5, 0.0, 0.2]]), target_mask=np.array([True])),

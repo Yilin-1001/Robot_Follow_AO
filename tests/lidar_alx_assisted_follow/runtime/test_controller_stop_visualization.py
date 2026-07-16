@@ -72,6 +72,13 @@ def test_hard_stop_still_publishes_preprocessed_cloud_for_web():
     _, status = latest_status.snapshot()
     preprocess.assert_called_once()
     assert status["points"] == points.tolist()
+    assert status["lateral_avoidance_zone"] == {
+        "kind": "rectangle",
+        "x_min_m": 0.0,
+        "x_max_m": config.apf.lateral_avoidance_length_m,
+        "y_min_m": -config.apf.lateral_avoidance_half_width_m,
+        "y_max_m": config.apf.lateral_avoidance_half_width_m,
+    }
     assert status["stop"]["reason"] == "user_stop"
 
 
