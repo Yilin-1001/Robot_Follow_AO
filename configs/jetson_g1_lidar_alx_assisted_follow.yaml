@@ -1,5 +1,6 @@
 # LiDAR + ALX Assisted Follow Configuration
-# Prototype configuration for Jetson G1 deployment
+# Each new point cloud triggers exactly one matched-ALX follow/avoidance pass.
+# ALX supplies the follow target; LiDAR supplies obstacle points only.
 
 lidar_alx_assisted_follow:
   alx:
@@ -66,6 +67,8 @@ lidar_alx_assisted_follow:
     self_x_max_m: 0.25
     self_abs_y_max_m: 0.25
     voxel_size_m: 0.05
+    # LiDAR returns within this radius of the matched ALX target are excluded
+    # from obstacle repulsion, so the tagged wearer is not treated as an obstacle.
     web_pick_radius_m: 0.35
     gate_radial_radius_m: 0.45
     gate_tangential_radius_m: 0.35

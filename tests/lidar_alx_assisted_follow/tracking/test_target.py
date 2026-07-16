@@ -63,6 +63,17 @@ class TestTargetLockManagerStates:
         assert manager.center_xy is None
         assert manager.snapshot().state == LockState.EMPTY
 
+    def test_external_alx_target_becomes_candidate_without_cloud_tracking(self) -> None:
+        """A time-matched ALX position provides the follow candidate itself."""
+        manager = TargetLockManager(config=TargetConfig())
+
+        manager.set_external_target((1.5, -0.2), now_s=12.0)
+
+        assert manager.state == LockState.CANDIDATE
+        assert manager.center_xy == (1.5, -0.2)
+        assert manager.follow_center_xy == (1.5, -0.2)
+        assert manager.snapshot().requires_start
+
     def test_select_transitions_to_candidate(self) -> None:
         """Successful select should transition to CANDIDATE."""
         config = TargetConfig(min_support_points=2, min_vertical_extent_m=0.1)

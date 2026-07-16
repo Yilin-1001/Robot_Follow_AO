@@ -12,7 +12,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from typing import Deque, List, Optional, Protocol, Tuple, Union
+from typing import Deque, List, Optional, Protocol, Union
 
 import numpy as np
 
@@ -55,10 +55,6 @@ from robot_follow.lidar_alx_assisted_follow.sensors.cloud import SequencedFastLI
 from robot_follow.lidar_alx_assisted_follow.sensors.lifecycle import (
     LifecycleState,
     WristbandLifecycleGuardian,
-)
-from robot_follow.lidar_alx_assisted_follow.tracking.confidence import (
-    check_confidence_state,
-    compute_confidence,
 )
 from robot_follow.lidar_alx_assisted_follow.tracking.preprocessing import preprocess_tracking_cloud
 from robot_follow.lidar_alx_assisted_follow.tracking.target import (
@@ -160,7 +156,6 @@ class LidarALXAssistedFollowRuntime:
     _state: RuntimeState = field(default_factory=RuntimeState)
     _last_strategy_time: float = 0.0
     _last_safety_stop_reason: Optional[str] = None
-    _pending_click_xy: Optional[Tuple[float, float]] = None
     _bridge_initialized: bool = False
     _running: bool = False
     _control_thread: Optional[threading.Thread] = None
@@ -261,10 +256,8 @@ class LidarALXAssistedFollowRuntime:
             Control event from Web.
         """
         if event.kind == ControlEventKind.SELECT_TARGET:
-            x = event.payload.get("x")
-            y = event.payload.get("y")
-            if x is not None and y is not None:
-                self._pending_click_xy = (float(x), float(y))
+            # ALX is the follow target. Browser clicks never retarget motion.
+            return
 
         elif event.kind == ControlEventKind.START_FOLLOW:
             # Start following
@@ -288,7 +281,7 @@ class LidarALXAssistedFollowRuntime:
         """Handle start_follow command.
 
         Requirements:
-        - Valid Candidate target
+        - Valid ALX-derived candidate target
         - Controller ownership
         - SENSORS_READY lifecycle
         - Fresh synchronized ALX
@@ -471,6 +464,12 @@ class LidarALXAssistedFollowRuntime:
                 alx_body_xy is not None
                 and alx_age_s < self.config.alx.stale_timeout_s
             )
+            if alx_fresh:
+                distance_m = float(np.linalg.norm(alx_body_xy))
+                alx_fresh = (
+                    self.config.alx.min_distance_m <= distance_m
+                    <= self.config.alx.max_distance_m
+                )
 
         self._state.last_alx_age_ms = alx_age_ms
         self._state.last_alx_body_xy = alx_body_xy if alx_fresh else None
@@ -539,104 +538,58 @@ class LidarALXAssistedFollowRuntime:
 
         compute_start = time.monotonic()
 
-        # Check ALX staleness
-        if not alx_fresh:
+        # The matched ALX sample is the follow target. LiDAR remains an
+        # obstacle source: this pass neither selects nor tracks a person from
+        # the cloud, and it runs only because this cloud is new.
+        if not alx_fresh or alx_body_xy is None:
             self.stop_latch.request("alx_stale", StopKind.SOFT)
-
-        # A Web click is applied to this fresh cloud, never to an old frame.
-        is_selected_seed = self._pending_click_xy is not None
-        previous_target = self.target_manager.snapshot()
-        if is_selected_seed:
-            observation = self.target_manager.select(
-                preprocessed,
-                self._pending_click_xy,
-                now,
-                measurement_timestamp_s=cloud.received_at_s,
+            self._state.last_confidence = ConfidenceResult(
+                c_t=0.0, c_g=0.0, c_a=0.0, total=0.0,
+                alx_fresh=False, reason="alx_stale",
             )
-            self._pending_click_xy = None
-            lost = False
-        else:
-            observation, lost = self.target_manager.update(
-                preprocessed,
-                now,
-                measurement_timestamp_s=cloud.received_at_s,
-            )
+            self._state.last_observation = None
+            self._log_strategy_zero(cloud, "alx_stale", now, preprocessed)
+            return
 
-        if lost:
-            self.stop_latch.request("target_lost", StopKind.HARD)
-
-        self._state.last_observation = observation
-
-        center_displacement: Optional[float] = None
-        frame_interval: Optional[float] = None
-        if (
-            observation is not None
-            and previous_target.center_xy is not None
-            and not is_selected_seed
-        ):
-            center_displacement = float(
-                np.hypot(
-                    observation.center_xy[0] - previous_target.center_xy[0],
-                    observation.center_xy[1] - previous_target.center_xy[1],
-                )
-            )
-            frame_interval = now - previous_target.last_seen_at_s
-
-        # Compute confidence
+        self.target_manager.set_external_target(
+            (float(alx_body_xy[0]), float(alx_body_xy[1])), now,
+        )
         target_snapshot = self.target_manager.snapshot()
-        confidence = compute_confidence(
-            observation=observation,
-            target_center_xy=target_snapshot.center_xy,
-            alx_body_xy=alx_body_xy,
-            alx_fresh=alx_fresh,
-            config=self.config.confidence,
-            target_config=self.config.target,
-            is_selected_seed=is_selected_seed,
-            center_displacement=center_displacement,
-            frame_interval=frame_interval,
+        follow_center_xy = self.target_manager.follow_center_xy
+        self._state.last_observation = None
+        confidence = ConfidenceResult(
+            c_t=1.0, c_g=1.0, c_a=1.0, total=1.0,
+            alx_fresh=True, reason="alx_target_matched",
         )
-
         self._state.last_confidence = confidence
-
-        # Check confidence state
-        action, reason = check_confidence_state(
-            confidence,
-            target_snapshot.state,
-            self.config.confidence,
-        )
-
-        if action == "unlock":
-            self.stop_latch.request("confidence_low", StopKind.HARD)
-            self.target_manager.unlock()
-        elif action == "stop":
-            self.stop_latch.request(reason or "confidence_low", StopKind.SOFT)
 
         latch_snapshot = self.stop_latch.snapshot()
         if (
             latch_snapshot.requested
             and latch_snapshot.kind == StopKind.SOFT
-            and latch_snapshot.reason in ("confidence_low", "alx_stale")
-            and observation is not None
-            and alx_fresh
-            and confidence.total >= self.config.confidence.start
+            and latch_snapshot.reason == StopReason.ALX_STALE.value
         ):
             self.stop_latch.clear_soft_recovery()
 
-        # Check if we have a valid target
-        follow_center_xy = self.target_manager.follow_center_xy
-        if (
-            observation is None
-            or target_snapshot.center_xy is None
-            or follow_center_xy is None
-        ):
-            self._log_strategy_zero(cloud, "no_target", now, preprocessed)
+        if target_snapshot.center_xy is None or follow_center_xy is None:
+            self._log_strategy_zero(cloud, "alx_stale", now, preprocessed)
             return
+
+        # A new ALX position creates a candidate, never autonomous motion.
+        # The operator must still send Start; until then each cloud pass keeps
+        # the bridge at zero velocity.
+        if target_snapshot.state != LockState.FOLLOWING:
+            self.stop_latch.request("motion_not_allowed", StopKind.SOFT)
+            self._log_strategy_zero(cloud, "motion_not_allowed", now, preprocessed)
+            return
+
+        target_mask = self._alx_target_mask(preprocessed, alx_body_xy)
 
         # Run APF
         apf_input = APFInput(
             cloud=preprocessed,
             target_center_xy=follow_center_xy,
-            target_mask=observation.target_mask,
+            target_mask=target_mask,
             confidence=confidence,
             sequence=cloud.sequence,
             alx_body_xy=alx_body_xy,
@@ -725,7 +678,7 @@ class LidarALXAssistedFollowRuntime:
             lock_state=target_snapshot.state.value,
             target_center_x=target_snapshot.center_xy[0] if target_snapshot.center_xy else float("nan"),
             target_center_y=target_snapshot.center_xy[1] if target_snapshot.center_xy else float("nan"),
-            target_support_count=observation.point_count if observation else 0,
+            target_support_count=0,
             confidence=confidence,
             stop_reason=(
                 dispatch_result.stop_reason
@@ -748,6 +701,20 @@ class LidarALXAssistedFollowRuntime:
             calibration_status="provisional",
         )
         self._publish_status(cloud, preprocessed)
+
+    def _alx_target_mask(
+        self, cloud: PreprocessedCloud, alx_body_xy: np.ndarray
+    ) -> np.ndarray:
+        """Exclude LiDAR returns spatially coincident with the ALX tag."""
+        mask = np.zeros(cloud.points_xyz.shape[0], dtype=bool)
+        if cloud.points_xyz.size == 0:
+            return mask
+        radius = self.config.target.web_pick_radius_m
+        mask[:] = np.hypot(
+            cloud.points_xyz[:, 0] - alx_body_xy[0],
+            cloud.points_xyz[:, 1] - alx_body_xy[1],
+        ) <= radius
+        return mask
 
     def _log_strategy_zero(
         self,

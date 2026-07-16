@@ -146,8 +146,8 @@ lidar_alx_assisted_follow:
         assert isinstance(components["alx_reader"], ALXPositionTopicSource)
         assert components["runtime"].alx_reader is components["alx_reader"]
 
-    def test_select_event_is_retained_until_the_next_cloud(self, tmp_path):
-        """A Web click is consumed by the control thread's next cloud pass."""
+    def test_select_event_cannot_replace_the_alx_follow_target(self, tmp_path):
+        """A Web click is ignored; only matched ALX positions set the target."""
         config_path = tmp_path / "test_config.yaml"
         config_path.write_text(
             "lidar_alx_assisted_follow:\n  logging:\n    enabled: false\n"
@@ -164,7 +164,7 @@ lidar_alx_assisted_follow:
             ControlEvent(ControlEventKind.SELECT_TARGET, {"x": 1.2, "y": -0.3})
         )
 
-        assert components["runtime"]._pending_click_xy == (1.2, -0.3)
+        assert components["runtime"].target_manager.center_xy is None
 
     def _make_args(
         self,

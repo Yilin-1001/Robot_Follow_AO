@@ -102,6 +102,12 @@ def make_strategy_result(
     )
 
 
+def arm_alx_target(runtime: LidarALXAssistedFollowRuntime) -> None:
+    """Put a runtime in the operator-authorized ALX-following state."""
+    runtime.target_manager.set_external_target((1.5, 0.0), now_s=9.99)
+    assert runtime.target_manager.start()
+
+
 # ============================================================================
 # Test: Strategy runs once per sequence, not at watchdog rate
 # ============================================================================
@@ -316,7 +322,7 @@ def test_strategy_timeout_dispatches_zero():
         bridge=bridge,
         csv_logger=Mock(),
     )
-    runtime._pending_click_xy = (1.5, 0.0)
+    arm_alx_target(runtime)
     points = np.array(
         [[1.46 + 0.01 * index, 0.0, -0.80 + 0.08 * index]
          for index in range(8)],
@@ -375,7 +381,7 @@ def test_runtime_logs_the_slew_limited_command_not_the_apf_request():
         bridge=bridge,
         csv_logger=csv_logger,
     )
-    runtime._pending_click_xy = (1.5, 0.0)
+    arm_alx_target(runtime)
     points = np.array(
         [[1.46 + 0.01 * index, 0.0, -0.80 + 0.08 * index]
          for index in range(8)],
@@ -406,8 +412,8 @@ def test_runtime_logs_the_slew_limited_command_not_the_apf_request():
     assert csv_logger.log_strategy.call_args.kwargs["dispatched_vx"] == pytest.approx(0.0015)
 
 
-def test_runtime_passes_filtered_center_only_to_apf():
-    """APF receives the smoother output while target tracking remains raw."""
+def test_runtime_passes_time_matched_alx_position_only_to_apf():
+    """APF target is ALX; LiDAR changes affect obstacles only."""
     config = PrototypeConfig()
     lifecycle = WristbandLifecycleGuardian(config.sensors.ready_timeout_s)
     lifecycle._state = LifecycleState.SENSORS_READY
@@ -450,7 +456,7 @@ def test_runtime_passes_filtered_center_only_to_apf():
         apf_inputs.append(input_data)
         return APFResult(intent=apf_intent, stop_reason=None)
 
-    runtime._pending_click_xy = (1.5, 0.0)
+    arm_alx_target(runtime)
     with patch(
         "robot_follow.lidar_alx_assisted_follow.runtime.controller.preprocess_tracking_cloud",
         side_effect=[first_cloud, second_cloud],
@@ -461,11 +467,9 @@ def test_runtime_passes_filtered_center_only_to_apf():
         runtime._process_cloud(make_cloud_snapshot(1, 9.99), alx, now=10.0)
         runtime._process_cloud(make_cloud_snapshot(2, 10.09), alx, now=10.1)
 
-    raw_center = runtime.target_manager.center_xy
-    assert raw_center is not None
     assert len(apf_inputs) == 2
-    assert apf_inputs[-1].target_center_xy == runtime.target_manager.follow_center_xy
-    assert apf_inputs[-1].target_center_xy[0] < raw_center[0]
+    assert apf_inputs[-1].target_center_xy == (1.5, 0.0)
+    assert apf_inputs[-1].target_mask.dtype == bool
 
 
 def test_strategy_older_than_end_to_end_budget_dispatches_zero():
@@ -496,7 +500,7 @@ def test_strategy_older_than_end_to_end_budget_dispatches_zero():
         bridge=bridge,
         csv_logger=csv_logger,
     )
-    runtime._pending_click_xy = (1.5, 0.0)
+    arm_alx_target(runtime)
     points = np.array(
         [[1.46 + 0.01 * index, 0.0, -0.80 + 0.08 * index]
          for index in range(8)],

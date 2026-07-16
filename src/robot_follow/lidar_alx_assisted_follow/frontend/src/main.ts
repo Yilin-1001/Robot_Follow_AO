@@ -104,7 +104,6 @@ class LiDARMonitor {
   private role: "controller" | "observer" | null = null;
   private latestFrame: StatusFrame | null = null;
   private reconnectAttempts = 0;
-  private selectedTarget: Point2D | null = null;
   private alxTrail: Point2D[] = [];
 
   // UI Elements
@@ -142,28 +141,6 @@ class LiDARMonitor {
   }
 
   private setupEventHandlers(): void {
-    // Canvas click handler (controller only)
-    this.canvas.addEventListener("click", (e: MouseEvent) => {
-      if (this.role !== "controller") {
-        return;
-      }
-
-      const rect = this.canvas.getBoundingClientRect();
-      const scaleX = this.canvas.width / rect.width;
-      const scaleY = this.canvas.height / rect.height;
-      const canvasX = (e.clientX - rect.left) * scaleX;
-      const canvasY = (e.clientY - rect.top) * scaleY;
-
-      const viewport = this.getViewport();
-      // AO/body convention: +x is robot-forward (canvas up), +y is
-      // robot-left (canvas left).  This is the inverse of ``toCanvas``.
-      const worldX = (viewport.centerY - canvasY) / viewport.scale;
-      const worldY = (viewport.centerX - canvasX) / viewport.scale;
-
-      this.selectedTarget = { x: worldX, y: worldY };
-      this.sendSelectTarget(worldX, worldY);
-    });
-
     // Control buttons
     this.startBtn.addEventListener("click", () => {
       if (this.role === "controller") {
@@ -311,9 +288,7 @@ class LiDARMonitor {
       this.drawPoints(this.latestFrame.points, POINT_COLOR, 1);
       this.drawPoints(this.latestFrame.target_points || [], TARGET_COLOR, 2);
 
-      // A target is drawn from the validated lock center, not directly from
-      // the browser click.  This makes the visual link match the target that
-      // the control loop is actually tracking.
+      // The control loop's target is the time-matched ALX position.
       if (this.latestFrame.target_gate && this.hasActiveTarget()) {
         this.drawTargetConnection(this.latestFrame.target_gate);
       }
@@ -333,10 +308,6 @@ class LiDARMonitor {
     // robot-facing direction in this monitor, matching the AO web viewer.
     this.drawRobotHeading();
 
-    // Draw selected target click position
-    if (this.selectedTarget) {
-      this.drawClick(this.selectedTarget);
-    }
   }
 
   private hasActiveTarget(): boolean {
@@ -432,10 +403,6 @@ class LiDARMonitor {
     for (const point of this.alxTrail) {
       include(point.x, point.y);
     }
-    if (this.selectedTarget) {
-      include(this.selectedTarget.x, this.selectedTarget.y);
-    }
-
     return bounds;
   }
 
@@ -610,32 +577,6 @@ class LiDARMonitor {
     ctx.fillStyle = synchronized ? ALX_COLOR : "#d29922";
     ctx.font = "11px monospace";
     ctx.fillText(`ALX (${body_xy[0].toFixed(2)}, ${body_xy[1].toFixed(2)})`, point.x + 9, point.y - 9);
-  }
-
-  private drawClick(target: Point2D): void {
-    const ctx = this.ctx;
-    const viewport = this.getViewport();
-    const point = this.toCanvas(target, viewport);
-
-    // Crosshair
-    ctx.strokeStyle = TARGET_COLOR;
-    ctx.lineWidth = 1;
-
-    ctx.beginPath();
-    ctx.moveTo(point.x - 8, point.y);
-    ctx.lineTo(point.x + 8, point.y);
-    ctx.moveTo(point.x, point.y - 8);
-    ctx.lineTo(point.x, point.y + 8);
-    ctx.stroke();
-  }
-
-  private sendSelectTarget(x: number, y: number): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      return;
-    }
-
-    const msg = { type: "select_target", x, y };
-    this.ws.send(JSON.stringify(msg));
   }
 
   private sendStartFollow(): void {

@@ -241,6 +241,25 @@ class TargetLockManager:
         self.sequence += 1
         return True
 
+    def set_external_target(
+        self,
+        center_xy: Tuple[float, float],
+        now_s: float,
+    ) -> None:
+        """Update the target from an already filtered external position source.
+
+        The runtime uses this for a time-matched ALX body position. LiDAR can
+        then remain an obstacle source instead of re-identifying the wearer.
+        """
+        self.center_xy = (float(center_xy[0]), float(center_xy[1]))
+        self._follow_center_xy = self.center_xy
+        self.last_seen_at_s = now_s
+        self._last_observation = None
+        if self.state in (LockState.EMPTY, LockState.LOST):
+            self.state = LockState.CANDIDATE
+            self.requires_start = True
+            self.sequence += 1
+
     def stop_follow(self) -> None:
         """Stop following and return to CANDIDATE state.
 

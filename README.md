@@ -276,10 +276,10 @@ conda run -n robot-follow pytest tests/real/test_alx_source.py
 
 ### 概述
 
-`lidar_alx_assisted_follow` 是一个独立的跟随原型，使用 Livox MID-360 LiDAR 和 FAST-LIO 进行局部目标选择，并通过 ALX-G100 UWB 腕带提供身份验证和置信度增强。
+`lidar_alx_assisted_follow` 是一个独立的跟随原型：ALX-G100 UWB 腕带的 body-frame 位置是唯一的跟随目标；Livox MID-360 LiDAR / FAST-LIO 点云只用于避障。
 
 **核心设计原则：**
-- 云驱动策略：每个点云序列最多处理一次
+- 云驱动策略：每个点云序列最多处理一次；每次匹配一条不晚于该点云且时间差合格的 ALX 位置，随后完成跟随、避障和一次指令下发
 - 40 Hz 安全监控：定时唤醒进行安全检查，不从旧点云重新计算策略
 - 最近帧优先：多个点云到达时只处理最新帧
 - 分离线程：Web 线程负责 WebSocket，控制线程负责策略计算和 G1 指令分发
@@ -302,7 +302,7 @@ conda run -n robot_followao_radar robot-follow-lidar-alx-assisted-follow \
 `/dev/ttyUSB0`；主程序托管的子进程是该串口唯一读取者。此命令使用模拟运动桥，
 不会驱动真实机器人，适合验证控制逻辑和 Web 界面。手环 ON 启动 Livox/FAST-LIO；
 OFF、状态 topic 超时或串口故障会停止雷达服务。ALX 约 21 Hz 位置进入有界时间
-缓存；点云、决策和 Web 仍由点云以约 10 Hz 驱动，并拒绝时间差超过配置项
+缓存；点云、决策和运动指令仍由点云以约 10 Hz 驱动，并拒绝时间差超过配置项
 `alx.cloud_max_skew_s` 的 ALX 样本。
 
 若 ALX 发布节点已由 systemd、launch 文件或另一个终端特意管理，可在主程序末尾
@@ -352,20 +352,18 @@ conda run -n robot_followao_radar robot-follow-lidar-alx-assisted-follow \
    - 控制器断开后，新连接的客户端成为控制器
    - 观察者无法发送控制命令
 
-2. **选择目标**
-   - 在点云中点击目标人物
-   - 系统应用初始圆形门控（`web_pick_radius_m = 0.35 m`）
-   - 目标状态变为 `CANDIDATE`（候选）
+2. **确认 ALX 目标**
+   - 等待与新点云时间匹配的 ALX 位置帧
+   - 系统将腕带位置设为 `CANDIDATE`（候选）
 
 3. **开始跟随**
    - 点击 Start 按钮
-   - 需要：有效候选目标、传感器就绪、ALX 新鲜、置信度 >= 0.80
+   - 需要：ALX 候选目标、传感器就绪、ALX 新鲜且与该点云同步
    - 目标状态变为 `FOLLOWING`，开始发送运动指令
 
 4. **停止跟随**
    - 点击 Stop 按钮，请求硬停止
-   - 目标保留为 `CANDIDATE`，继续零运动跟踪
-   - 或点击新目标重新选择
+   - ALX 目标保留为 `CANDIDATE`，继续零运动监控
 
 ### Jetson 部署准备
 
