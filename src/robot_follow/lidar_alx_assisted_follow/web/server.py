@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import time
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -28,6 +29,8 @@ from robot_follow.lidar_alx_assisted_follow.web.protocol import (
 )
 
 logger = logging.getLogger(__name__)
+
+WEB_SHUTDOWN_TIMEOUT_S = 1.0
 
 
 @dataclass
@@ -387,6 +390,11 @@ def create_app(
         Configured aiohttp application.
     """
     app = web.Application()
+    # AppRunner otherwise waits for open WebSocket handlers until its generous
+    # default shutdown timeout expires.  Keep weak references so shutdown can
+    # actively close browser sessions before runner.cleanup() waits for them.
+    app["websockets"] = weakref.WeakSet()
+    app.on_shutdown.append(_close_websockets)
 
     # Static files
     app.router.add_static("/assets", path=f"{static_dir}/assets/")
@@ -398,6 +406,24 @@ def create_app(
     app["static_dir"] = static_dir
 
     return app
+
+
+async def _close_websockets(app: web.Application) -> None:
+    """Close active browser sessions so server shutdown cannot hang on a page."""
+    websockets = tuple(app["websockets"])
+    if not websockets:
+        return
+    await asyncio.gather(
+        *(
+            ws.close(
+                code=aiohttp.WSCloseCode.GOING_AWAY,
+                message=b"Server shutdown",
+            )
+            for ws in websockets
+            if not ws.closed
+        ),
+        return_exceptions=True,
+    )
 
 
 async def _handle_index(request: web.Request) -> web.StreamResponse:
@@ -413,6 +439,7 @@ async def _handle_websocket(request: web.Request) -> web.WebSocketResponse:
     """
     ws = web.WebSocketResponse()
     await ws.prepare(request)
+    request.app["websockets"].add(ws)
 
     hub: PrototypeWebHub = request.app["hub"]
     client_id = id(ws)
@@ -507,6 +534,7 @@ async def _handle_websocket(request: web.Request) -> web.WebSocketResponse:
         # Cleanup
         broadcast_task.cancel()
         await hub.disconnect(client_id)
+        request.app["websockets"].discard(ws)
         logger.info("WebSocket disconnected: %s", client_id)
 
     return ws
@@ -537,7 +565,7 @@ async def run_web_server(
         The app runner (caller must call runner.cleanup() on shutdown).
     """
     app = create_app(hub=hub, static_dir=static_dir)
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(app, shutdown_timeout=WEB_SHUTDOWN_TIMEOUT_S)
     await runner.setup()
 
     site = web.TCPSite(runner, host=host, port=port)

@@ -66,8 +66,11 @@ class ALXRosConfig:
     """ROS2 publication settings for the filtered ALX body-frame position."""
 
     topic: str = "/alx/position"
+    wristband_topic: str = "/alx/wristband_state"
     frame_id: str = "body"
     poll_hz: float = 200.0
+    wristband_publish_hz: float = 10.0
+    wristband_timeout_s: float = 0.50
     kalman_process_noise: float = 0.05
     kalman_measurement_noise: float = 0.25
     kalman_max_interval_s: float = 0.20
@@ -75,11 +78,20 @@ class ALXRosConfig:
     def __post_init__(self) -> None:
         if not self.topic.startswith("/"):
             raise ValueError(f"alx_ros.topic must be absolute, got {self.topic!r}")
+        if not self.wristband_topic.startswith("/"):
+            raise ValueError(
+                "alx_ros.wristband_topic must be absolute, got "
+                f"{self.wristband_topic!r}"
+            )
+        if self.wristband_topic == self.topic:
+            raise ValueError("alx_ros.wristband_topic must differ from alx_ros.topic")
         if self.frame_id != "body":
             raise ValueError(
                 f"alx_ros.frame_id must be 'body', got {self.frame_id!r}"
             )
         _validate_positive(self.poll_hz, "alx_ros.poll_hz")
+        _validate_positive(self.wristband_publish_hz, "alx_ros.wristband_publish_hz")
+        _validate_positive(self.wristband_timeout_s, "alx_ros.wristband_timeout_s")
         _validate_positive(self.kalman_process_noise, "alx_ros.kalman_process_noise")
         _validate_positive(self.kalman_measurement_noise, "alx_ros.kalman_measurement_noise")
         _validate_positive(self.kalman_max_interval_s, "alx_ros.kalman_max_interval_s")
@@ -87,10 +99,11 @@ class ALXRosConfig:
 
 @dataclass(frozen=True)
 class SensorsConfig:
-    """Sensor topic and timing configuration."""
+    """Sensor topic, body-frame convention, and timing configuration."""
 
     topic: str = "/cloud_registered_body"
     expected_frame_id: str = "body"
+    cloud_y_sign: int = 1
     max_cloud_age_s: float = 0.25
     ready_timeout_s: float = 10.0
     stop_timeout_s: float = 3.0
@@ -101,6 +114,11 @@ class SensorsConfig:
         if self.expected_frame_id != "body":
             raise ValueError(
                 f"sensors.expected_frame_id must be 'body', got '{self.expected_frame_id}'"
+            )
+        if self.cloud_y_sign not in (1, -1):
+            raise ValueError(
+                "sensors.cloud_y_sign must be +1 or -1, got "
+                f"{self.cloud_y_sign}"
             )
         _validate_positive(self.max_cloud_age_s, "sensors.max_cloud_age_s")
         _validate_positive(self.ready_timeout_s, "sensors.ready_timeout_s")

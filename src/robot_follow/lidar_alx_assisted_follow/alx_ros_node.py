@@ -1,4 +1,4 @@
-"""Publish Kalman-smoothed ALX positions as one ROS2 topic.
+"""Publish filtered ALX position plus explicit wristband control state.
 
 ROS imports are deliberately lazy so pure-Python tests and non-ROS modes do
 not require a Jetson ROS2 installation.
@@ -16,6 +16,7 @@ from robot_follow.lidar_alx_assisted_follow.sensors.alx import ALXSnapshot
 from robot_follow.lidar_alx_assisted_follow.sensors.alx_ros_position import (
     ALXPositionPublisherCore,
 )
+from robot_follow.lidar_alx_assisted_follow.sensors.wristband import WristbandTopicState
 from robot_follow.real.alx_source import ALXLiveSource
 
 
@@ -51,6 +52,7 @@ def _run(config) -> int:
         from geometry_msgs.msg import PointStamped
         from rclpy.node import Node
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        from std_msgs.msg import UInt8
     except ImportError as exc:
         raise RuntimeError(
             "ROS2 Foxy with rclpy and geometry_msgs is required for "
@@ -62,7 +64,7 @@ def _run(config) -> int:
 
         def __init__(self) -> None:
             super().__init__("robot_follow_alx_position")
-            qos = QoSProfile(
+            position_qos = QoSProfile(
                 depth=1,
                 reliability=ReliabilityPolicy.BEST_EFFORT,
                 durability=DurabilityPolicy.VOLATILE,
@@ -70,7 +72,17 @@ def _run(config) -> int:
             self._publisher = self.create_publisher(
                 PointStamped,
                 config.alx_ros.topic,
-                qos,
+                position_qos,
+            )
+            wristband_qos = QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            self._wristband_publisher = self.create_publisher(
+                UInt8,
+                config.alx_ros.wristband_topic,
+                wristband_qos,
             )
             self._source = ALXLiveSource(
                 port=config.alx.port,
@@ -88,14 +100,20 @@ def _run(config) -> int:
             self._last_wait_log_at = 0.0
             self._last_seen_received_at = None
             self._published_once = False
+            self._last_wristband_state = None
+            self._last_wristband_published_at = 0.0
             self._source.start()
             self._timer = self.create_timer(
                 1.0 / config.alx_ros.poll_hz,
                 self._publish_latest,
             )
             self.get_logger().info(
-                "ALX position publisher started: port=%s topic=%s"
-                % (config.alx.port, config.alx_ros.topic),
+                "ALX publisher started: port=%s position_topic=%s wristband_topic=%s"
+                % (
+                    config.alx.port,
+                    config.alx_ros.topic,
+                    config.alx_ros.wristband_topic,
+                ),
             )
 
         def _log_waiting(self, reason: str) -> None:
@@ -106,6 +124,8 @@ def _run(config) -> int:
                 self._last_wait_log_at = now
 
         def _publish_latest(self) -> None:
+            self._publish_wristband_state()
+
             # A position is useful only while the wristband protocol has
             # positively identified an enabled state.  We intentionally do
             # not republish a previous value when the serial stream is stale.
@@ -161,8 +181,45 @@ def _run(config) -> int:
                 )
                 self._published_once = True
 
+        def _current_wristband_state(self) -> WristbandTopicState:
+            """Map the cached serial parser state onto the ROS wire contract."""
+            live_snapshot = self._source.snapshot()
+            if live_snapshot is not None and live_snapshot.error is not None:
+                return WristbandTopicState.SERIAL_FAULT
+
+            enabled = self._source.wristband_state().enabled
+            if enabled is True:
+                return WristbandTopicState.ON
+            if enabled is False:
+                return WristbandTopicState.OFF
+            return WristbandTopicState.UNKNOWN
+
+        def _publish_wristband_state(self, force: bool = False) -> None:
+            """Publish transitions immediately and emit a bounded heartbeat."""
+            state = self._current_wristband_state()
+            now = time.monotonic()
+            period_s = 1.0 / config.alx_ros.wristband_publish_hz
+            if (
+                not force
+                and state == self._last_wristband_state
+                and now - self._last_wristband_published_at < period_s
+            ):
+                return
+
+            message = UInt8()
+            message.data = int(state)
+            self._wristband_publisher.publish(message)
+            self._last_wristband_state = state
+            self._last_wristband_published_at = now
+
         def close(self) -> None:
             """Stop serial IO before releasing ROS resources."""
+            # Do not leave a retained ON state behind when this sole serial
+            # owner is intentionally stopped.  Consumers still fail closed on
+            # heartbeat timeout if this final publication is not delivered.
+            self._wristband_publisher.publish(
+                UInt8(data=int(WristbandTopicState.SERIAL_FAULT))
+            )
             self._source.stop()
             self.destroy_node()
 
@@ -188,7 +245,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """CLI entry point for the single-topic ALX ROS2 publisher."""
+    """CLI entry point for the ALX ROS2 position/state publisher."""
     args = parse_args(argv)
     config = load_prototype_config(args.config)
     return _run(config)

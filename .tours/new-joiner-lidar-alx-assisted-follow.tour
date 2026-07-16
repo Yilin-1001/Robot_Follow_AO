@@ -1,0 +1,73 @@
+{
+  "$schema": "https://aka.ms/codetour-schema",
+  "title": "LiDAR + ALX Assisted Follow — 新成员架构导览",
+  "description": "面向理解新 LiDAR + ALX 辅助跟随原型的开发者：从配置、传感器和跨线程状态，到目标跟踪与尚待实现的控制输出边界。",
+  "ref": "HEAD",
+  "steps": [
+    {
+      "directory": "src/robot_follow/lidar_alx_assisted_follow",
+      "title": "独立原型包",
+      "description": "这是计划中的独立运行模式，而不是 AO 运行时的扩展。现有代码已包含 domain、config、sensors、tracking 与 runtime/state；motion、web、frontend、完整 runtime 和 cli 仍待实现。"
+    },
+    {
+      "file": "docs/superpowers/plans/2026-07-14-lidar-alx-assisted-follow-prototype.md",
+      "line": 354,
+      "title": "先读边界，再读代码",
+      "description": "文件结构和依赖方向在这里被锁定：domain 无依赖，runtime 负责编排，web 不能直接驱动传感器或 G1，cli 只负责组装。它是理解哪些代码可以互相调用的权威来源。"
+    },
+    {
+      "file": "configs/jetson_g1_lidar_alx_assisted_follow.yaml",
+      "line": 4,
+      "title": "部署配置是原型的参数中心",
+      "description": "YAML 根固定为 lidar_alx_assisted_follow。它定义输入话题、40 Hz 看门狗、32 个控制事件、低速上限、目标门、置信度、APF、Web 和 CSV 参数；默认输出是 mock。"
+    },
+    {
+      "file": "src/robot_follow/lidar_alx_assisted_follow/config/loader.py",
+      "line": 27,
+      "title": "严格加载配置",
+      "description": "加载器要求唯一根键，并将每个 section 交给冻结 dataclass。未知字段在 _validated_section 中被拒绝，避免拼写错误默默退化为默认值。"
+    },
+    {
+      "file": "src/robot_follow/lidar_alx_assisted_follow/domain/models.py",
+      "line": 12,
+      "title": "跨模块的数据合同",
+      "description": "这里定义 StopKind、CloudSnapshot、ALXObservation、PreprocessedCloud、目标观测、置信度和运动意图。它们应该是各模块之间唯一共享的业务数据，而不是共享可变对象。"
+    },
+    {
+      "file": "src/robot_follow/lidar_alx_assisted_follow/sensors/cloud.py",
+      "line": 14,
+      "title": "最新点云 + 序号唤醒",
+      "description": "SequencedFastLIOPointCloudSource 包装既有 FAST-LIO 源。每次更新递增 sequence、覆盖 latest_snapshot 并设置 Event；控制循环应只处理最新未见云，丢弃过期中间帧。"
+    },
+    {
+      "file": "src/robot_follow/lidar_alx_assisted_follow/sensors/alx.py",
+      "line": 26,
+      "title": "ALX 是辅助身份证据",
+      "description": "缓冲区按 received_at 去重，保留一秒，并在 for_cloud 中只选择不晚于该云、时间偏差合格且标签匹配的样本。它不会把 ALX 当作直接运动控制输入。"
+    },
+    {
+      "file": "src/robot_follow/lidar_alx_assisted_follow/runtime/state.py",
+      "line": 30,
+      "title": "Web 控制、状态推送和 STOP 的隔离",
+      "description": "ControlEventInbox 为离散 Web 意图提供 32 容量和 select_target 合并；LatestStatus 只保存最新状态；StopLatch 允许任何线程请求停止，但只允许控制线程在有效 Start 或软恢复时清除。"
+    },
+    {
+      "file": "src/robot_follow/lidar_alx_assisted_follow/tracking/preprocessing.py",
+      "line": 17,
+      "title": "把原始云变为可追踪云",
+      "description": "预处理过滤非有限点、距离、高度和车体自遮挡区，然后作确定性体素下采样。source_indices 使后续掩码始终处于下采样后的正确索引域。"
+    },
+    {
+      "file": "src/robot_follow/lidar_alx_assisted_follow/tracking/target.py",
+      "line": 19,
+      "title": "单目标锁定状态机",
+      "description": "没有人物聚类或自动选人。用户点击先建立圆形候选门，随后以目标径向/切向椭圆门追踪；stop_follow 保留候选，unlock 清除目标。"
+    },
+    {
+      "file": "src/robot_follow/lidar_alx_assisted_follow/tracking/confidence.py",
+      "line": 23,
+      "title": "三证据置信度",
+      "description": "时间连续性、点云几何质量和 ALX 与目标的一致性加权为总置信度。此结果决定继续、软停或解锁；但真正的 APF、限速、最后一跳 StopLatch 复查和 G1 dispatch 将由尚未创建的 motion/runtime/controller 模块承担。"
+    }
+  ]
+}

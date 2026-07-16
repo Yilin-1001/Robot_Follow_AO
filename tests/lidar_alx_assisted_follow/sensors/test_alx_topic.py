@@ -10,6 +10,9 @@ from robot_follow.lidar_alx_assisted_follow.sensors.alx_topic import (
     ALXPositionSample,
     ALXPositionTopicSource,
 )
+from robot_follow.lidar_alx_assisted_follow.sensors.wristband import (
+    WristbandTopicState,
+)
 
 
 def sample(
@@ -97,3 +100,21 @@ def test_topic_source_rejects_wrong_frame_and_non_finite_coordinates() -> None:
         y_m=2.0,
     )
     assert source.latest_snapshot() is None
+
+
+def test_topic_source_tracks_explicit_wristband_heartbeat_separately() -> None:
+    buffer = ALXPositionBuffer(ALXConfig())
+    source = ALXPositionTopicSource(
+        topic="/alx/position",
+        wristband_topic="/alx/wristband_state",
+        expected_frame_id="body",
+        stale_timeout_s=0.50,
+        wristband_timeout_s=0.25,
+        buffer=buffer,
+    )
+
+    source.update_wristband_for_test(WristbandTopicState.ON, received_at=20.0)
+
+    assert source.wristband_status().enabled is True
+    assert source.is_wristband_status_fresh(now=20.24)
+    assert not source.is_wristband_status_fresh(now=20.26)

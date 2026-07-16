@@ -155,8 +155,10 @@ class LiDARMonitor {
       const canvasY = (e.clientY - rect.top) * scaleY;
 
       const viewport = this.getViewport();
-      const worldX = (canvasX - viewport.centerX) / viewport.scale;
-      const worldY = (viewport.centerY - canvasY) / viewport.scale;
+      // AO/body convention: +x is robot-forward (canvas up), +y is
+      // robot-left (canvas left).  This is the inverse of ``toCanvas``.
+      const worldX = (viewport.centerY - canvasY) / viewport.scale;
+      const worldY = (viewport.centerX - canvasX) / viewport.scale;
 
       this.selectedTarget = { x: worldX, y: worldY };
       this.sendSelectTarget(worldX, worldY);
@@ -327,6 +329,10 @@ class LiDARMonitor {
       }
     }
 
+    // Keep the robot marker above point-cloud data.  Canvas up is the
+    // robot-facing direction in this monitor, matching the AO web viewer.
+    this.drawRobotHeading();
+
     // Draw selected target click position
     if (this.selectedTarget) {
       this.drawClick(this.selectedTarget);
@@ -434,9 +440,11 @@ class LiDARMonitor {
   }
 
   private toCanvas(point: Point2D, viewport: Viewport): Point2D {
+    // Match the AO web viewer and ROS body frame: x points forward and y
+    // points left.  Thus a person at (+x, +y) appears upper-left of the robot.
     return {
-      x: viewport.centerX + point.x * viewport.scale,
-      y: viewport.centerY - point.y * viewport.scale,
+      x: viewport.centerX - point.y * viewport.scale,
+      y: viewport.centerY - point.x * viewport.scale,
     };
   }
 
@@ -463,11 +471,32 @@ class LiDARMonitor {
       ctx.stroke();
     }
 
-    // Draw origin (robot position)
-    ctx.fillStyle = "#484f58";
+  }
+
+  private drawRobotHeading(): void {
+    const ctx = this.ctx;
+    const viewport = this.getViewport();
+
+    // A compact upward arrow: its tip denotes the robot's forward direction.
+    // The geometry intentionally stays pixel-sized so it remains legible as
+    // the point-cloud viewport zooms in and out.
+    ctx.save();
+    ctx.translate(viewport.centerX, viewport.centerY);
+    ctx.fillStyle = "#8b949e";
+    ctx.strokeStyle = "#c9d1d9";
+    ctx.lineWidth = 1.25;
     ctx.beginPath();
-    ctx.arc(viewport.centerX, viewport.centerY, 4, 0, 2 * Math.PI);
+    ctx.moveTo(0, -18);
+    ctx.lineTo(13, -2);
+    ctx.lineTo(6, -2);
+    ctx.lineTo(6, 15);
+    ctx.lineTo(-6, 15);
+    ctx.lineTo(-6, -2);
+    ctx.lineTo(-13, -2);
+    ctx.closePath();
     ctx.fill();
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawPoints(points: Point3D[], color: string, size: number): void {
@@ -493,8 +522,11 @@ class LiDARMonitor {
     const ctx = this.ctx;
     const viewport = this.getViewport();
     const center = this.toCanvas({ x: gate.center_xy[0], y: gate.center_xy[1] }, viewport);
-    const radiusX = gate.radial_radius_m * viewport.scale;
-    const radiusY = gate.tangential_radius_m * viewport.scale;
+    // Body radial direction is x (vertical on screen); tangential is y
+    // (horizontal on screen), so canvas ellipse radii are intentionally
+    // swapped from the body-frame names.
+    const radiusX = gate.tangential_radius_m * viewport.scale;
+    const radiusY = gate.radial_radius_m * viewport.scale;
 
     ctx.strokeStyle = GATE_COLOR;
     ctx.lineWidth = 2;

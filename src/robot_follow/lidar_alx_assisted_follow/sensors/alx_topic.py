@@ -1,4 +1,4 @@
-"""Filtered ALX ROS2 topic input with bounded causal matching."""
+"""Filtered ALX position and wristband ROS2 inputs with causal matching."""
 
 from __future__ import annotations
 
@@ -12,6 +12,10 @@ from typing import Deque, Optional
 import numpy as np
 
 from robot_follow.lidar_alx_assisted_follow.config.schema import ALXConfig
+from robot_follow.lidar_alx_assisted_follow.sensors.wristband import (
+    WristbandStatus,
+    WristbandTopicState,
+)
 
 
 @dataclass(frozen=True)
@@ -88,22 +92,30 @@ class ALXPositionBuffer:
 
 
 class ALXPositionTopicSource:
-    """Subscribe to ``geometry_msgs/PointStamped`` without touching serial IO."""
+    """Subscribe to ALX position/control topics without touching serial IO."""
 
     def __init__(
         self,
         *,
         topic: str,
+        wristband_topic: str = "/alx/wristband_state",
         expected_frame_id: str,
         stale_timeout_s: float,
+        wristband_timeout_s: float = 0.50,
         buffer: ALXPositionBuffer,
     ) -> None:
         self.topic = topic
+        self.wristband_topic = wristband_topic
         self._expected_frame_id = expected_frame_id
         self._stale_timeout_s = stale_timeout_s
+        self._wristband_timeout_s = wristband_timeout_s
         self._buffer = buffer
         self._lock = threading.Lock()
         self._latest: Optional[ALXPositionSample] = None
+        self._wristband_status = WristbandStatus(
+            state=WristbandTopicState.UNKNOWN,
+            received_at=None,
+        )
         self._last_error: Optional[str] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -134,7 +146,7 @@ class ALXPositionTopicSource:
             return self._latest
 
     def is_ok(self, now: Optional[float] = None) -> bool:
-        """Return whether the topic has no error and its latest frame is fresh."""
+        """Return whether the position topic has no error and is fresh."""
         if now is None:
             now = time.monotonic()
         with self._lock:
@@ -149,9 +161,37 @@ class ALXPositionTopicSource:
             return True
         return now - latest.received_at <= self._stale_timeout_s
 
+    def wristband_status(self) -> WristbandStatus:
+        """Return the newest explicit wristband control status."""
+        with self._lock:
+            return self._wristband_status
+
+    def is_wristband_status_fresh(self, now: Optional[float] = None) -> bool:
+        """Return whether the reliable wristband heartbeat is recent."""
+        if now is None:
+            now = time.monotonic()
+        with self._lock:
+            status = self._wristband_status
+            error = self._last_error
+        if error is not None or status.received_at is None:
+            return False
+        return now - status.received_at <= self._wristband_timeout_s
+
     def update_for_test(self, sample: ALXPositionSample) -> None:
         """Inject a validated position without requiring ROS2."""
         self._accept_sample(sample)
+
+    def update_wristband_for_test(
+        self,
+        state: WristbandTopicState,
+        *,
+        received_at: Optional[float] = None,
+    ) -> None:
+        """Inject a wristband state without requiring ROS2."""
+        self._accept_wristband_state(
+            state,
+            time.monotonic() if received_at is None else received_at,
+        )
 
     def accept_position(
         self,
@@ -183,6 +223,18 @@ class ALXPositionTopicSource:
             self._latest = sample
             self._last_error = None
 
+    def _accept_wristband_state(
+        self,
+        state: WristbandTopicState,
+        received_at: float,
+    ) -> None:
+        with self._lock:
+            self._wristband_status = WristbandStatus(
+                state=state,
+                received_at=received_at,
+            )
+            self._last_error = None
+
     def _run_ros2(self) -> None:
         """Own a separate ROS2 context so FAST-LIO can keep its existing one."""
         try:
@@ -192,6 +244,7 @@ class ALXPositionTopicSource:
             from rclpy.executors import SingleThreadedExecutor
             from rclpy.node import Node
             from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+            from std_msgs.msg import UInt8
 
             context = Context()
             rclpy.init(args=None, context=context)
@@ -202,6 +255,11 @@ class ALXPositionTopicSource:
                 depth=1,
                 reliability=ReliabilityPolicy.BEST_EFFORT,
                 durability=DurabilityPolicy.VOLATILE,
+            )
+            wristband_qos = QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
             )
 
             def on_position(message: PointStamped) -> None:
@@ -217,7 +275,20 @@ class ALXPositionTopicSource:
                     y_m=float(message.point.y),
                 )
 
+            def on_wristband_state(message: UInt8) -> None:
+                try:
+                    state = WristbandTopicState(int(message.data))
+                except ValueError:
+                    state = WristbandTopicState.SERIAL_FAULT
+                self._accept_wristband_state(state, time.monotonic())
+
             node.create_subscription(PointStamped, self.topic, on_position, qos)
+            node.create_subscription(
+                UInt8,
+                self.wristband_topic,
+                on_wristband_state,
+                wristband_qos,
+            )
             try:
                 while not self._stop.is_set():
                     executor.spin_once(timeout_sec=0.05)

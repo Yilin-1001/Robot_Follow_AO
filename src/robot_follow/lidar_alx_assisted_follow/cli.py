@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import logging
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -41,11 +42,70 @@ from robot_follow.lidar_alx_assisted_follow.sensors.alx_topic import (
 from robot_follow.lidar_alx_assisted_follow.sensors.lifecycle import WristbandLifecycleGuardian
 from robot_follow.lidar_alx_assisted_follow.tracking.target import TargetLockManager
 from robot_follow.lidar_alx_assisted_follow.motion.limiter import CommandSlewRateLimiter
-from robot_follow.lidar_alx_assisted_follow.web.server import PrototypeWebHub, create_app
+from robot_follow.lidar_alx_assisted_follow.web.server import (
+    WEB_SHUTDOWN_TIMEOUT_S,
+    PrototypeWebHub,
+    create_app,
+)
 from robot_follow.real.g1.bridge import G1MotionBridge
 from robot_follow.ao.live.radar_service_manager import RadarServiceManager
 
 logger = logging.getLogger(__name__)
+
+
+class ManagedALXRosNode:
+    """Run the sole ALX serial owner as a child of the assisted-follow CLI.
+
+    Keeping the ROS publisher in its own process preserves its independent
+    ROS2 context and the single-owner rule for ``/dev/ttyUSB*``.  The parent
+    owns its lifecycle, so normal operation needs only one user command.
+    """
+
+    def __init__(self, config_path: Path) -> None:
+        self._config_path = config_path.resolve()
+        self._process: Optional[subprocess.Popen[object]] = None
+
+    @property
+    def command(self) -> list[str]:
+        """Return the exact child command, using the parent's Python runtime."""
+        return [
+            sys.executable,
+            "-m",
+            "robot_follow.lidar_alx_assisted_follow.alx_ros_node",
+            str(self._config_path),
+        ]
+
+    def start(self) -> None:
+        """Start the ALX ROS publisher once."""
+        if self.is_running:
+            return
+        try:
+            self._process = subprocess.Popen(self.command)
+        except OSError as exc:
+            raise RuntimeError("Could not start managed ALX ROS publisher") from exc
+
+    @property
+    def return_code(self) -> Optional[int]:
+        """Return the child exit code, or ``None`` while it is running."""
+        return None if self._process is None else self._process.poll()
+
+    @property
+    def is_running(self) -> bool:
+        """Whether the managed publisher is still alive."""
+        return self._process is not None and self.return_code is None
+
+    def stop(self, timeout_s: float = 3.0) -> None:
+        """Terminate the publisher and wait for it to release the serial port."""
+        process = self._process
+        if process is None or process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            logger.warning("Managed ALX ROS publisher did not exit; killing it")
+            process.kill()
+            process.wait(timeout=timeout_s)
 
 
 # Mock bridge for testing without G1 hardware
@@ -119,6 +179,30 @@ class ALXLiveReaderAdapter(ALXReaderProtocol):
         snapshot = self._source.snapshot()
         return snapshot is None or snapshot.error is None
 
+    def wristband_status(self):
+        """Expose legacy serial wristband state through the topic-reader API."""
+        from robot_follow.lidar_alx_assisted_follow.sensors.wristband import (
+            WristbandStatus,
+            WristbandTopicState,
+        )
+
+        snapshot = self._source.snapshot()
+        if snapshot is not None and snapshot.error is not None:
+            state = WristbandTopicState.SERIAL_FAULT
+        else:
+            enabled = self._source.wristband_state().enabled
+            if enabled is True:
+                state = WristbandTopicState.ON
+            elif enabled is False:
+                state = WristbandTopicState.OFF
+            else:
+                state = WristbandTopicState.UNKNOWN
+        return WristbandStatus(state, received_at=time.monotonic())
+
+    def is_wristband_status_fresh(self, now: Optional[float] = None) -> bool:
+        del now
+        return self.is_ok() and self._source.wristband_state().updated_at is not None
+
 
 class UnavailableALXReader(ALXReaderProtocol):
     """Legacy safe placeholder retained for isolated tests."""
@@ -128,6 +212,18 @@ class UnavailableALXReader(ALXReaderProtocol):
 
     def is_ok(self) -> bool:
         return True
+
+    def wristband_status(self):
+        from robot_follow.lidar_alx_assisted_follow.sensors.wristband import (
+            WristbandStatus,
+            WristbandTopicState,
+        )
+
+        return WristbandStatus(WristbandTopicState.UNKNOWN, received_at=None)
+
+    def is_wristband_status_fresh(self, now: Optional[float] = None) -> bool:
+        del now
+        return False
 
 
 def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
@@ -221,6 +317,7 @@ def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
     cloud_source = SequencedFastLIOPointCloudSource(
         topic=config.sensors.topic,
         expected_frame_id=config.sensors.expected_frame_id,
+        cloud_y_sign=config.sensors.cloud_y_sign,
     )
     components["cloud_source"] = cloud_source
 
@@ -251,8 +348,10 @@ def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
 
     alx_reader = ALXPositionTopicSource(
         topic=config.alx_ros.topic,
+        wristband_topic=config.alx_ros.wristband_topic,
         expected_frame_id=config.alx_ros.frame_id,
         stale_timeout_s=config.alx.stale_timeout_s,
+        wristband_timeout_s=config.alx_ros.wristband_timeout_s,
         buffer=alx_buffer,
     )
     components["alx_reader"] = alx_reader
@@ -327,6 +426,9 @@ Examples:
   # Mock mode (no hardware)
   robot-follow-lidar-alx-assisted-follow config.yaml
 
+  # The ALX ROS publisher starts automatically.  Use --external-alx-ros only
+  # when a separately managed publisher is intentionally already running.
+
   # Real G1 with provisional calibration
   robot-follow-lidar-alx-assisted-follow config.yaml \\
       --confirm-real-g1 --allow-provisional-calibration
@@ -382,6 +484,15 @@ Examples:
         help="Logging level",
     )
 
+    parser.add_argument(
+        "--external-alx-ros",
+        action="store_true",
+        help=(
+            "Do not start the ALX ROS publisher; subscribe to an intentionally "
+            "separately managed publisher instead"
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -399,6 +510,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         Exit code (0 for success, non-zero for error).
     """
     args = parse_args(argv)
+    managed_alx_ros_node: Optional[ManagedALXRosNode] = None
+    managed_alx_ros_failed = False
 
     # Configure logging
     logging.basicConfig(
@@ -446,15 +559,30 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.info(f"Web host: {args.host or config.web.host}")
         logger.info(f"Web port: {args.port or config.web.port}")
 
-        # 1. Start filtered ALX topic subscriber
-        logger.info("Subscribing to filtered ALX topic %s...", config.alx_ros.topic)
+        # 1. Start the sole serial owner unless an external supervisor owns it.
+        if getattr(args, "external_alx_ros", False):
+            logger.info("Using externally managed ALX ROS publisher")
+        else:
+            managed_alx_ros_node = ManagedALXRosNode(args.config)
+            logger.info(
+                "Starting managed ALX ROS publisher: %s",
+                " ".join(managed_alx_ros_node.command),
+            )
+            managed_alx_ros_node.start()
+
+        # 2. Start filtered ALX topic subscriber.
+        logger.info(
+            "Subscribing to ALX topics: position=%s wristband=%s...",
+            config.alx_ros.topic,
+            config.alx_ros.wristband_topic,
+        )
         alx_topic_source.start()
 
-        # 2. Start the cloud source.  It imports ROS only in its reader thread.
+        # 3. Start the cloud source.  It imports ROS only in its reader thread.
         logger.info("Starting FAST-LIO cloud reader...")
         cloud_source.start()
 
-        # 3. Start control thread
+        # 4. Start control thread
         logger.info("Starting control thread...")
         control_thread = threading.Thread(
             target=runtime.run_control_loop,
@@ -463,7 +591,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         control_thread.start()
 
-        # 4. Build and start web server
+        # 5. Build and start web server
         import asyncio
         from aiohttp import web
 
@@ -476,7 +604,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         async def run_web():
             """Run web server with shutdown handling."""
-            runner = web.AppRunner(app)
+            runner = web.AppRunner(app, shutdown_timeout=WEB_SHUTDOWN_TIMEOUT_S)
             await runner.setup()
             site = web.TCPSite(runner, host, port)
             await site.start()
@@ -502,6 +630,18 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         # Wait for shutdown
         while not shutdown_requested.is_set():
+            if (
+                managed_alx_ros_node is not None
+                and not managed_alx_ros_node.is_running
+            ):
+                logger.error(
+                    "Managed ALX ROS publisher exited unexpectedly (code=%s); "
+                    "requesting safe shutdown",
+                    managed_alx_ros_node.return_code,
+                )
+                managed_alx_ros_failed = True
+                shutdown_requested.set()
+                continue
             shutdown_requested.wait(timeout=0.5)
 
     except SystemExit:
@@ -509,6 +649,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         raise
     except Exception as e:
         logger.exception(f"Startup failed: {e}")
+        if managed_alx_ros_node is not None:
+            managed_alx_ros_node.stop()
         return 1
 
     # Shutdown sequence
@@ -538,23 +680,28 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.info("Stopping ALX topic subscriber...")
         alx_topic_source.stop()
 
-        # 6. Close CSV logger
+        # 6. Stop the sole serial owner after subscribers have stopped.
+        if managed_alx_ros_node is not None:
+            logger.info("Stopping managed ALX ROS publisher...")
+            managed_alx_ros_node.stop()
+
+        # 7. Close CSV logger
         if csv_logger:
             logger.info("Closing CSV logger...")
             csv_logger.close()
 
-        # 7. Join web thread
+        # 8. Join web thread
         logger.info("Waiting for web server to finish...")
-        web_thread.join(timeout=2.0)
+        web_thread.join(timeout=WEB_SHUTDOWN_TIMEOUT_S + 1.0)
         if web_thread.is_alive():
             logger.warning("Web thread did not shut down cleanly")
 
-        # 8. Close cloud source
+        # 9. Close cloud source
         logger.info("Closing cloud source...")
         cloud_source.stop()
 
         logger.info("Shutdown complete")
-        return 0
+        return 1 if managed_alx_ros_failed else 0
 
     except Exception as e:
         logger.exception(f"Error during shutdown: {e}")

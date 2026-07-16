@@ -118,3 +118,17 @@ class TestSequencedFastLIOPointCloudSource:
         # Attempt to modify should fail
         with pytest.raises(ValueError, match="read-only"):
             snapshot.points_xyz[0, 0] = 999.0
+
+    def test_negative_cloud_y_sign_corrects_lateral_mirroring(self) -> None:
+        source = SequencedFastLIOPointCloudSource(cloud_y_sign=-1)
+        source.update_for_test(
+            body_frame(points=[[1.2, 0.8, 0.3], [0.7, -0.4, 0.1]])
+        )
+
+        snapshot = source.latest_snapshot()
+
+        assert snapshot is not None
+        assert np.array_equal(
+            snapshot.points_xyz,
+            np.array([[1.2, -0.8, 0.3], [0.7, 0.4, 0.1]]),
+        )

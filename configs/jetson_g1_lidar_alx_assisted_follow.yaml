@@ -10,12 +10,16 @@ lidar_alx_assisted_follow:
     min_distance_m: 0.10
     max_distance_m: 20.0
 
-  # Single ROS2 output topic for the Kalman-smoothed horizontal ALX position.
-  # The topic uses geometry_msgs/PointStamped in the body frame.
+  # ALX ROS2 outputs.  The position topic carries only filtered body-frame
+  # coordinates; the reliable wristband state topic retains hand-band control
+  # of Livox/FAST-LIO startup and shutdown.
   alx_ros:
     topic: /alx/position
+    wristband_topic: /alx/wristband_state
     frame_id: body
     poll_hz: 200.0
+    wristband_publish_hz: 10.0
+    wristband_timeout_s: 0.50
     kalman_process_noise: 0.05
     kalman_measurement_noise: 0.25
     kalman_max_interval_s: 0.20
@@ -23,6 +27,9 @@ lidar_alx_assisted_follow:
   sensors:
     topic: /cloud_registered_body
     expected_frame_id: body
+    # FAST-LIO's y axis is mirrored relative to this robot's body convention:
+    # +x forward, +y left.  Flip only LiDAR points; ALX is calibrated separately.
+    cloud_y_sign: -1
     max_cloud_age_s: 0.25
     ready_timeout_s: 10.0
     stop_timeout_s: 3.0

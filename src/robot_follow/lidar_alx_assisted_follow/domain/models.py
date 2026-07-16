@@ -40,6 +40,7 @@ class StopReason(str, Enum):
     - unsafe_rotation: Rotation envelope unsafe
     - all_directions_unsafe: All candidate directions unsafe
     - strategy_timeout: Strategy computation > max_strategy_process_ms
+    - strategy_stale: Cloud-to-dispatch age > max_strategy_age_s
     - invalid_input: Invalid input data
     """
 
@@ -64,6 +65,7 @@ class StopReason(str, Enum):
     UNSAFE_ROTATION = "unsafe_rotation"
     ALL_DIRECTIONS_UNSAFE = "all_directions_unsafe"
     STRATEGY_TIMEOUT = "strategy_timeout"
+    STRATEGY_STALE = "strategy_stale"
     INVALID_INPUT = "invalid_input"
 
 

@@ -24,6 +24,7 @@ class SequencedFastLIOPointCloudSource(FastLIOPointCloudSource):
         topic: str = "/cloud_registered_body",
         expected_frame_id: str = "body",
         require_body_frame: bool = True,
+        cloud_y_sign: int = 1,
     ) -> None:
         super().__init__(
             topic=topic,
@@ -34,6 +35,9 @@ class SequencedFastLIOPointCloudSource(FastLIOPointCloudSource):
         self._next_sequence: int = 1
         self._latest_snapshot: Optional[CloudSnapshot] = None
         self._event = threading.Event()
+        if cloud_y_sign not in (1, -1):
+            raise ValueError("cloud_y_sign must be +1 or -1")
+        self._cloud_y_sign = cloud_y_sign
 
     @property
     def event(self) -> threading.Event:
@@ -75,9 +79,15 @@ class SequencedFastLIOPointCloudSource(FastLIOPointCloudSource):
         super().update_for_test(frame)
 
         # Build sequenced CloudSnapshot
-        points = np.asarray(frame.points_xyz, dtype=np.float64)
+        # FAST-LIO's incoming frame has been observed mirrored laterally on
+        # this deployment.  Normalize it here, before tracking, APF and Web
+        # serialization, while retaining +x=forward and the configured body
+        # frame identity.  ALX uses its own already-correct calibration.
+        points = np.array(frame.points_xyz, dtype=np.float64, copy=True)
         if points.ndim == 1 and points.size == 0:
             points = np.empty((0, 3), dtype=np.float64)
+        elif points.ndim == 2 and points.shape[1] >= 2:
+            points[:, 1] *= self._cloud_y_sign
 
         # Make read-only to guarantee immutability
         points.flags.writeable = False

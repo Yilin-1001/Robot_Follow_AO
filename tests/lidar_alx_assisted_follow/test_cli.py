@@ -200,3 +200,23 @@ class TestCLIStartupShutdown:
     def test_shutdown_joins_control_thread_before_bridge_close(self, tmp_path):
         """Control thread must be joined before closing G1 bridge."""
         pass
+
+
+class TestManagedALXRosNode:
+    """Unit tests for the one-command ALX publisher supervisor."""
+
+    def test_child_uses_the_same_python_and_an_absolute_config_path(self, tmp_path):
+        from robot_follow.lidar_alx_assisted_follow.cli import ManagedALXRosNode
+        import sys
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("lidar_alx_assisted_follow: {}\n")
+
+        node = ManagedALXRosNode(config_path)
+
+        assert node.command[:3] == [
+            sys.executable,
+            "-m",
+            "robot_follow.lidar_alx_assisted_follow.alx_ros_node",
+        ]
+        assert node.command[3] == str(config_path.resolve())

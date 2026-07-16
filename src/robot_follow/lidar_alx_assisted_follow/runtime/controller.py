@@ -47,6 +47,10 @@ from robot_follow.lidar_alx_assisted_follow.sensors.alx_topic import (
     ALXPositionBuffer,
     ALXPositionSample,
 )
+from robot_follow.lidar_alx_assisted_follow.sensors.wristband import (
+    WristbandStatus,
+    WristbandTopicState,
+)
 from robot_follow.lidar_alx_assisted_follow.sensors.cloud import SequencedFastLIOPointCloudSource
 from robot_follow.lidar_alx_assisted_follow.sensors.lifecycle import (
     LifecycleState,
@@ -66,7 +70,7 @@ from robot_follow.ao.live.radar_service_manager import RadarServiceManager
 
 
 class ALXReaderProtocol(Protocol):
-    """Protocol for the filtered ALX ROS2 topic source."""
+    """Protocol for filtered ALX position and wristband ROS2 topics."""
 
     def latest_snapshot(
         self,
@@ -75,7 +79,15 @@ class ALXReaderProtocol(Protocol):
         ...
 
     def is_ok(self) -> bool:
-        """Check whether the topic source is healthy and fresh."""
+        """Check whether the position topic source is healthy and fresh."""
+        ...
+
+    def wristband_status(self) -> WristbandStatus:
+        """Get the latest explicit wristband control status."""
+        ...
+
+    def is_wristband_status_fresh(self, now: Optional[float] = None) -> bool:
+        """Check whether wristband control status has a fresh heartbeat."""
         ...
 
 
@@ -107,6 +119,11 @@ class RuntimeState:
 
     # Freshness anchor for watchdog cloud-age checks.
     last_cloud_received_at_s: Optional[float] = None
+
+    # Last explicit ALX control state observed from the reliable wristband
+    # topic.  This lets OFF/Fault stop managed services even if the lifecycle
+    # was already in WRISTBAND_OFF because of an earlier partial startup.
+    last_wristband_control_state: Optional[WristbandTopicState] = None
 
 
 @dataclass
@@ -343,10 +360,28 @@ class LidarALXAssistedFollowRuntime:
         now : float
             Current monotonic time.
         """
-        # Determine wristband state
-        wristband_on = alx_snapshot is not None and not alx_snapshot.error
-        tag_id = alx_snapshot.tag_id if alx_snapshot is not None else None
-        serial_ok = self.alx_reader.is_ok()
+        # The dedicated control topic, not position arrival, owns the wristband
+        # lifecycle.  PointStamped intentionally contains no tag identifier;
+        # tag ID 0 preserves the existing single-tag topic-mode session model.
+        wristband_status = self.alx_reader.wristband_status()
+        status_fresh = self.alx_reader.is_wristband_status_fresh(now)
+        control_state = (
+            wristband_status.state
+            if status_fresh
+            else WristbandTopicState.SERIAL_FAULT
+        )
+        control_state_changed = (
+            control_state != self._state.last_wristband_control_state
+        )
+        self._state.last_wristband_control_state = control_state
+        wristband_on = (
+            status_fresh and control_state == WristbandTopicState.ON
+        )
+        tag_id = 0 if wristband_on else None
+        serial_ok = (
+            status_fresh
+            and control_state != WristbandTopicState.SERIAL_FAULT
+        )
 
         # Tick lifecycle
         previous_state = self.lifecycle.state
@@ -365,11 +400,36 @@ class LidarALXAssistedFollowRuntime:
             self.radar_services.ensure_running()
 
         # Handle lifecycle transitions
-        if should_stop_services:
+        # An explicit OFF is safety-critical in its own right.  Do not rely
+        # solely on a lifecycle transition: a runtime started while sensors
+        # were already running can otherwise remain in WRISTBAND_OFF and miss
+        # the command to terminate the processes it owns.
+        forced_stop_reason: Optional[str] = None
+        if control_state_changed:
+            if control_state == WristbandTopicState.OFF:
+                forced_stop_reason = StopReason.WRISTBAND_OFF.value
+            elif control_state in (
+                WristbandTopicState.UNKNOWN,
+                WristbandTopicState.SERIAL_FAULT,
+            ):
+                forced_stop_reason = StopReason.SERIAL_ERROR.value
+
+        if should_stop_services or forced_stop_reason is not None:
             self.radar_services.stop()
-            # Request stop if needed
+            # Request stop when the lifecycle detects a safety transition.
             if transition_reason in ("wristband_off_or_serial_error", "ready_timeout", "tag_changed"):
-                self.stop_latch.request(transition_reason, StopKind.HARD)
+                if control_state == WristbandTopicState.OFF:
+                    stop_reason = StopReason.WRISTBAND_OFF.value
+                elif transition_reason == "ready_timeout":
+                    stop_reason = StopReason.READY_TIMEOUT.value
+                elif transition_reason == "tag_changed":
+                    stop_reason = "tag_changed"
+                else:
+                    stop_reason = StopReason.SERIAL_ERROR.value
+                self.stop_latch.request(stop_reason, StopKind.HARD)
+                self.target_manager.unlock()
+            elif forced_stop_reason is not None:
+                self.stop_latch.request(forced_stop_reason, StopKind.HARD)
                 self.target_manager.unlock()
 
         if new_state == LifecycleState.SENSORS_READY and not self._bridge_initialized:
@@ -461,15 +521,6 @@ class LidarALXAssistedFollowRuntime:
             self._log_strategy_zero(cloud, "lifecycle_not_ready", now)
             return
 
-        # Check stop latch
-        latch_snapshot = self.stop_latch.snapshot()
-        if latch_snapshot.requested and latch_snapshot.kind == StopKind.HARD:
-            reason = latch_snapshot.reason or "stop"
-            self._log_strategy_zero(cloud, reason, now)
-            return
-
-        compute_start = time.monotonic()
-
         # Preprocess cloud
         preprocessed = preprocess_tracking_cloud(
             cloud.points_xyz,
@@ -477,7 +528,16 @@ class LidarALXAssistedFollowRuntime:
             self.config.calibration,
         )
 
+        # A hard stop blocks all tracking and motion work, but the Web monitor
+        # must retain the current LiDAR view so an operator can diagnose and
+        # explicitly restart from an informed state.
+        latch_snapshot = self.stop_latch.snapshot()
+        if latch_snapshot.requested and latch_snapshot.kind == StopKind.HARD:
+            reason = latch_snapshot.reason or "stop"
+            self._log_strategy_zero(cloud, reason, now, preprocessed)
+            return
 
+        compute_start = time.monotonic()
 
         # Check ALX staleness
         if not alx_fresh:
@@ -569,7 +629,7 @@ class LidarALXAssistedFollowRuntime:
             or target_snapshot.center_xy is None
             or follow_center_xy is None
         ):
-            self._log_strategy_zero(cloud, "no_target", now)
+            self._log_strategy_zero(cloud, "no_target", now, preprocessed)
             return
 
         # Run APF
@@ -616,6 +676,27 @@ class LidarALXAssistedFollowRuntime:
 
         # Dispatch to G1
         dispatch_start = time.monotonic()
+        if (
+            strategy_result.stop_reason is None
+            and dispatch_start - cloud.received_at_s
+            > self.config.runtime.max_strategy_age_s
+        ):
+            stale_intent = MotionIntent(
+                sequence=cloud.sequence,
+                vx=0.0,
+                vy=0.0,
+                omega=0.0,
+                reason=StopReason.STRATEGY_STALE.value,
+                generated_at_s=dispatch_start,
+            )
+            strategy_result = StrategyResult(
+                sequence=cloud.sequence,
+                apf_requested=stale_intent,
+                dispatched=stale_intent,
+                safety_complete=True,
+                stop_reason=StopReason.STRATEGY_STALE,
+                compute_ms=compute_ms,
+            )
         latch_snapshot = self.stop_latch.snapshot()
 
         dispatch_result = dispatch_strategy_or_stop(
@@ -673,6 +754,7 @@ class LidarALXAssistedFollowRuntime:
         cloud: CloudSnapshot,
         reason: str,
         now: float,
+        preprocessed: Optional[PreprocessedCloud] = None,
     ) -> None:
         """Log zero-motion strategy result.
 
@@ -704,7 +786,7 @@ class LidarALXAssistedFollowRuntime:
         )
 
         self._state.last_strategy_result = strategy_result
-        self._publish_status(cloud, None)
+        self._publish_status(cloud, preprocessed)
 
     def _run_watchdog_checks(self, now: float) -> None:
         """Run watchdog safety checks.

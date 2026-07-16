@@ -21,6 +21,8 @@ from robot_follow.lidar_alx_assisted_follow.runtime.state import (
 from robot_follow.lidar_alx_assisted_follow.web.server import (
     ClientInfo,
     PrototypeWebHub,
+    _close_websockets,
+    create_app,
 )
 
 
@@ -52,6 +54,18 @@ class FakeStopLatch:
         )
 
 
+class FakeWebSocket:
+    """Minimal closeable WebSocket used without opening a TCP listener."""
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.close_calls: list[tuple[int, bytes]] = []
+
+    async def close(self, *, code: int, message: bytes) -> None:
+        self.close_calls.append((code, message))
+        self.closed = True
+
+
 class TestPrototypeWebHub:
     """Tests for PrototypeWebHub."""
 
@@ -73,6 +87,25 @@ class TestPrototypeWebHub:
         assert info.role == "controller"
         assert hub.controller_id == "client-a"
         assert hub.role_of("client-a") == "controller"
+
+    async def test_shutdown_closes_open_websockets(self, tmp_path) -> None:
+        """A browser connection must not keep runner.cleanup() waiting."""
+        static_dir = tmp_path / "static"
+        (static_dir / "assets").mkdir(parents=True)
+        (static_dir / "index.html").write_text("<!doctype html>")
+        hub = PrototypeWebHub(
+            stop_latch=FakeStopLatch(),  # type: ignore[arg-type]
+            event_inbox=ControlEventInbox(),
+            latest_status=LatestStatus(),
+        )
+        app = create_app(hub, str(static_dir))
+        websocket = FakeWebSocket()
+        app["websockets"].add(websocket)
+
+        await _close_websockets(app)
+
+        assert websocket.closed is True
+        assert websocket.close_calls == [(1001, b"Server shutdown")]
 
     @pytest.mark.asyncio
     async def test_second_connection_becomes_observer(self) -> None:
