@@ -2,12 +2,12 @@
 pyserial>=3.5
 numpy>=1.23
 aiohttp>=3.8
-
-# Unitree G1 SDK dependency
-cyclonedds==0.10.2
+PyYAML>=6.0
 
 # Development and test dependencies
 pytest>=7.0
 
-# Install the Unitree Python SDK separately when doing G1 hardware integration:
-# pip install git+https://github.com/unitreerobotics/unitree_sdk2_python.git
+# ROS 2 Humble's RMW libraries and Unitree's Python SDK use different
+# CycloneDDS version lines.  Do not install Unitree's cyclonedds==0.10.2 into
+# this generic ROS runtime.  Follow docs/ros2_humble_backpack_deployment.md
+# and qualify the selected integration strategy before enabling real G1 motion.

@@ -397,6 +397,21 @@ def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
     return components
 
 
+def _initialize_motion_bridge_for_runtime(*, output_mode: str, bridge: Any) -> None:
+    """Initialize the real G1 bridge before any control-loop activity.
+
+    The control loop deliberately emits STOP commands until all sensor and
+    operator preconditions are satisfied.  A real bridge must therefore be
+    initialized *before* that loop starts; otherwise those safe-stop commands
+    only produce repeated "called before init" warnings and hide the actual
+    Unitree SDK / DDS initialization error.
+    """
+    if output_mode != "real":
+        return
+    logger.info("Initializing G1 motion bridge before starting control loop...")
+    bridge.init()
+
+
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     """Parse command-line arguments.
 
@@ -555,6 +570,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.info(f"Output mode: {config.output.mode}")
         logger.info(f"Web host: {args.host or config.web.host}")
         logger.info(f"Web port: {args.port or config.web.port}")
+
+        # A real bridge must be ready before the control loop can issue its
+        # first mandatory safe-stop command.  ``init()`` raises on SDK / DDS
+        # setup failure, which aborts startup before any sensor child process
+        # or motion-control thread is created.
+        _initialize_motion_bridge_for_runtime(
+            output_mode=config.output.mode,
+            bridge=bridge,
+        )
 
         # 1. Start the sole serial owner unless an external supervisor owns it.
         if getattr(args, "external_alx_ros", False):

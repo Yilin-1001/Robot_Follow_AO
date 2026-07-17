@@ -188,6 +188,36 @@ lidar_alx_assisted_follow:
 class TestCLIStartupShutdown:
     """Test CLI startup and shutdown sequence."""
 
+    def test_real_mode_initializes_bridge_before_control_loop(self):
+        """Real runtime startup must initialize Unitree before safe STOPs."""
+        from robot_follow.lidar_alx_assisted_follow.cli import (
+            _initialize_motion_bridge_for_runtime,
+        )
+
+        class FakeBridge:
+            def __init__(self):
+                self.init_calls = 0
+
+            def init(self):
+                self.init_calls += 1
+
+        bridge = FakeBridge()
+        _initialize_motion_bridge_for_runtime(output_mode="real", bridge=bridge)
+
+        assert bridge.init_calls == 1
+
+    def test_mock_mode_does_not_initialize_motion_bridge(self):
+        """Mock mode must never touch a motion bridge initializer."""
+        from robot_follow.lidar_alx_assisted_follow.cli import (
+            _initialize_motion_bridge_for_runtime,
+        )
+
+        class FakeBridge:
+            def init(self):
+                raise AssertionError("mock mode must not initialize G1")
+
+        _initialize_motion_bridge_for_runtime(output_mode="mock", bridge=FakeBridge())
+
     def test_startup_order_is_correct(self, tmp_path):
         """Verify startup order: ALX reader -> cloud reader -> control thread -> aiohttp."""
         # This will be verified through integration testing

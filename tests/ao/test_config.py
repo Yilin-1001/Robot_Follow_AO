@@ -119,18 +119,17 @@ def test_loads_dedicated_ao_radar_config() -> None:
     assert config.output.mode == "g1"
     assert config.output.network_interface == "eth0"
     assert config.radar.livox_start_command == "ros2 launch livox_ros_driver2 msg_MID360_launch.py"
-    assert "/home/fk/g1_mid360_ros2_ws/src/FAST_LIO_ROS2/config/mid360.yaml" in (
-        config.radar.fast_lio_start_command
-    )
+    assert "${FAST_LIO_CONFIG_DIR:?FAST_LIO_CONFIG_not_set}" in config.radar.fast_lio_start_command
+    assert "${FAST_LIO_CONFIG_FILE:-mid360.yaml}" in config.radar.fast_lio_start_command
     assert config.logging.timestamped_runs is True
     assert config.filter.alpha == 0.65
     assert config.follow.target_distance_m == 1.0
     assert config.follow.min_safe_distance_m == 0.15
     assert config.follow.max_forward_vx == 2.0
     assert config.safety.min_safe_distance_m == 0.15
-    assert config.g1.max_vx == 3.0
-    assert config.g1.max_vy == 0.30
-    assert config.g1.max_omega == 3.0
+    assert config.g1.max_vx == 0.9
+    assert config.g1.max_vy == 0.45
+    assert config.g1.max_omega == 1.0
     assert config.avoidance.lateral_vy_mps == 0.30
     assert config.avoidance.forward_vx_when_avoiding_mps == 0.05
     assert config.avoidance.max_vx == 2.0

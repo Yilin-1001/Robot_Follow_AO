@@ -249,6 +249,17 @@ class G1MotionBridge:
         if self._client is None:
             logger.warning("G1 stop called before init, ignoring")
             return
+        # A hard stop can be requested on every control-loop tick while a
+        # wristband is OFF or its status is unavailable.  One successful
+        # SetVelocity(0, 0, 0) already places the bridge in STOPPED and the
+        # SDK command itself has no persistent non-zero motion to cancel.
+        # Re-sending the same request at 40 Hz only floods the G1 DDS channel
+        # and obscures the original safety reason in logs.  A later move()
+        # transitions the state back to ACTIVE, so the next stop remains
+        # immediate.
+        if self._state == BridgeState.STOPPED:
+            logger.debug("G1 stop suppressed: bridge is already stopped")
+            return
         now = self._clock()
         if not self._should_attempt_stop(now):
             return

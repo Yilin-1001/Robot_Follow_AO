@@ -318,6 +318,20 @@ def test_stop_command_sends_zero_velocity():
     assert bridge.state == BridgeState.STOPPED
 
 
+def test_repeated_successful_stops_send_only_one_zero_velocity():
+    """An OFF wristband must not flood the G1 DDS channel at control-loop rate."""
+    fake = FakeLocoClient()
+    bridge = G1MotionBridge("eth0", fake_client=fake)
+    bridge.init()
+
+    bridge.stop("serial_error")
+    bridge.stop("serial_error")
+    bridge.stop("wristband_off")
+
+    assert fake.set_velocity_calls == [_ZERO_VEL_CALL]
+    assert bridge.state == BridgeState.STOPPED
+
+
 def test_stop_set_velocity_return_code_nonzero_triggers_error():
     """A non-zero code from stop's SetVelocity is recorded without raising.
     Under Option A, stop() is a single SetVelocity(0,0,0,1.0); a failed stop is

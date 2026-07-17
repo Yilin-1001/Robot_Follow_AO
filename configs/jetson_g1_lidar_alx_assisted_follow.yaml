@@ -5,7 +5,7 @@
 lidar_alx_assisted_follow:
   # ALX-G100 串口、有效距离与时间同步约束。
   alx:
-    port: /dev/ttyUSB0                    # ALX 接收器串口设备。
+    port: /dev/ttyUSB0                    # 新背包上的 ALX 接收器串口设备。
     baudrate: 115200                       # 串口波特率；须与 ALX 保持一致。
     stale_timeout_s: 0.50                  # 超过此时间未收到 ALX 数据即视为失效。
     cloud_max_skew_s: 0.08                 # 点云时间戳与匹配 ALX 样本允许的最大时间差。
@@ -33,11 +33,13 @@ lidar_alx_assisted_follow:
     ready_timeout_s: 10.0                   # 启动后等待首帧点云的最长时间。
     stop_timeout_s: 3.0                     # 停止 Livox/FAST-LIO 进程的等待上限。
     livox_start_command: "ros2 launch livox_ros_driver2 msg_MID360_launch.py" # 启动 MID-360 驱动的命令。
-    fast_lio_start_command: "ros2 launch fast_lio mapping.launch.py config_file:=/home/fk/g1_mid360_ros2_ws/src/FAST_LIO_ROS2/config/mid360.yaml rviz:=false" # 启动 FAST-LIO 的命令。
+    # ``mapping.launch.py`` 接受配置目录和文件名两个参数。Humble 启动脚本从
+    # FAST_LIO_CONFIG（完整路径）推导这两个环境变量，避免绑定旧背包路径。
+    fast_lio_start_command: "ros2 launch fast_lio mapping.launch.py config_path:=${FAST_LIO_CONFIG_DIR:?FAST_LIO_CONFIG_not_set} config_file:=${FAST_LIO_CONFIG_FILE:-mid360.yaml} rviz:=false" # 启动 FAST-LIO 的命令。
 
   # Unitree G1 通信及最终桥接侧的速度上限。
   g1:
-    network_interface: eth0                 # G1 SDK 使用的网卡。
+    network_interface: enP8p1s0             # 已在 Humble 背包通过 Unitree SDK init-only 验证的 G1 DDS 网卡。
     max_vx: 0.9                            # 前向线速度绝对上限；保守跟随档。
     max_abs_vy: 0.45                        # 横向线速度绝对上限；保守跟随档。
     max_abs_omega: 1.0                     # 角速度绝对上限；保守跟随档。

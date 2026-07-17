@@ -1,0 +1,21 @@
+[Unit]
+Description=Robot Follow (ROS 2 Humble)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace robot with the non-root deployment account.
+User=robot
+Group=robot
+WorkingDirectory=/opt/robot-follow
+EnvironmentFile=/etc/robot-follow/humble.env
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/usr/bin/test -e /dev/ttyUSB0
+ExecStart=/opt/robot-follow/scripts/run_humble_lidar_assisted_follow.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

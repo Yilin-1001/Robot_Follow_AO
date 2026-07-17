@@ -55,7 +55,7 @@ def _run(config) -> int:
         from std_msgs.msg import UInt8
     except ImportError as exc:
         raise RuntimeError(
-            "ROS2 Foxy with rclpy and geometry_msgs is required for "
+            "ROS2 Humble with rclpy and geometry_msgs is required for "
             "robot-follow-alx-ros"
         ) from exc
 

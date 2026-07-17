@@ -261,6 +261,8 @@ conda run -n robot-follow pytest tests/real/test_alx_source.py
 
 ## 参考文档
 
+- [CH341_PERSISTENT_INSTALL.md](CH341_PERSISTENT_INSTALL.md)：Jetson Humble 背包上为 ALX/CH340 安装并开机自动加载 CH341 串口驱动
+- [requirements-humble.txt](requirements-humble.txt)：本地 `robot_followao_radar_humble`（Python 3.10）可迁移的固定 Python 依赖；背包创建同名 Conda 环境的步骤见 `docs/ros2_humble_backpack_deployment.md`
 - `docs/alx_ch340_usb_setup.md`：ALX/CH340 串口连接说明
 - `docs/alx_wristband_gui_test_guide.md`：ALX 腕带 GUI 测试指南
 - `docs/alx_g1_verification_chain.md`：ALX 到 G1 的验证链路

@@ -62,7 +62,9 @@ ao_radar:
   radar:
     idle_stop_s: 5.0
     livox_start_command: "ros2 launch livox_ros_driver2 msg_MID360_launch.py"
-    fast_lio_start_command: "ros2 launch fast_lio mapping.launch.py config_file:=/home/fk/g1_mid360_ros2_ws/src/FAST_LIO_ROS2/config/mid360.yaml rviz:=false"
+    # ``mapping.launch.py`` 接收配置目录和文件名；Humble 启动脚本由
+    # FAST_LIO_CONFIG（完整路径）推导这两个环境变量。
+    fast_lio_start_command: "ros2 launch fast_lio mapping.launch.py config_path:=${FAST_LIO_CONFIG_DIR:?FAST_LIO_CONFIG_not_set} config_file:=${FAST_LIO_CONFIG_FILE:-mid360.yaml} rviz:=false"
     stop_timeout_s: 3.0
     ready_timeout_s: 10.0
   latency:

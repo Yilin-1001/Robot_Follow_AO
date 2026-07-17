@@ -1,0 +1,39 @@
+# Portable Python dependency baseline exported from the local
+# `robot_followao_radar_humble` environment (Python 3.10.20).
+#
+# Create the target environment with Python 3.10, then install this file.
+# ROS 2 packages (rclpy, sensor_msgs, geometry_msgs, std_msgs) come from
+# /opt/ros/humble after sourcing it; do not install them from PyPI here.
+# Unitree's SDK and cyclonedds are intentionally excluded until their DDS
+# coexistence strategy has been qualified on the backpack.
+
+# Runtime
+aiohappyeyeballs==2.4.4
+aiohttp==3.10.11
+aiosignal==1.3.1
+async-timeout==5.0.1
+attrs==25.3.0
+# ROS 2 Humble's rosidl Python helpers import this module as `em` when the
+# interpreter is Conda Python rather than Ubuntu's system Python.
+empy==3.3.4
+frozenlist==1.5.0
+idna==3.15
+# Ubuntu 22.04's python3-lark package is 1.1.1.  rosidl_parser imports this
+# module when ROS 2 Humble runs under Conda Python.
+lark==1.1.1
+multidict==6.1.0
+numpy==1.24.4
+propcache==0.2.0
+pyserial==3.5
+PyYAML==6.0.3
+typing_extensions==4.13.2
+yarl==1.15.2
+
+# Development and test dependencies from the same local environment
+exceptiongroup==1.3.1
+iniconfig==2.1.0
+packaging==24.1
+pluggy==1.5.0
+pytest==8.3.5
+pytest-asyncio==0.24.0
+tomli==2.4.1

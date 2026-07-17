@@ -6,7 +6,10 @@ build-backend = "setuptools.build_meta"
 name = "robot-follow"
 version = "0.1.0"
 description = "ALX-G100 to Unitree G1 low-speed follow MVP"
-requires-python = ">=3.8"
+# ROS 2 Humble binary packages on Ubuntu 22.04 use Python 3.10.  Keeping the
+# project on that baseline prevents accidentally using the old Foxy/Python 3.8
+# deployment environment for a Humble backpack.
+requires-python = ">=3.10"
 dependencies = [
   "pyserial>=3.5",
   "numpy>=1.23",
@@ -31,4 +34,9 @@ robot-follow-alx-ros = "robot_follow.lidar_alx_assisted_follow.alx_ros_node:main
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# Tests import both the src package and repository scripts.  Importlib mode
+# prevents flat test modules with identical basenames in separate feature
+# directories from colliding during Python 3.10 collection.
+pythonpath = ["src", "."]
+addopts = ["--import-mode=importlib"]
+asyncio_default_fixture_loop_scope = "function"
