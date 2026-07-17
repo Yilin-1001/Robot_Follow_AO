@@ -9,6 +9,7 @@ import yaml
 
 from .schema import (
     APFConfig,
+    AvoidanceConfig,
     ALXConfig,
     ALXRosConfig,
     CalibrationConfig,
@@ -94,6 +95,7 @@ def _build_config(root: Dict[str, Any]) -> PrototypeConfig:
         target=section("target", TargetConfig),
         calibration=section("calibration", CalibrationConfig),
         confidence=section("confidence", ConfidenceConfig),
+        avoidance=section("avoidance", AvoidanceConfig),
         apf=section("apf", APFConfig),
         output_motion=section("output_motion", OutputMotionConfig),
         web=section("web", WebConfig),

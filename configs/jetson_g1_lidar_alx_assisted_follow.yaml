@@ -100,7 +100,11 @@ lidar_alx_assisted_follow:
     alx_height_m: 1.10                      # ALX 接收器离地高度。
     allow_provisional_calibration_for_prototype: true # 标定暂定时允许启动；真实输出仍须 CLI 二次确认。
 
-  # 人体跟随吸引力与 LiDAR 障碍规避（APF）参数。
+  # 局部避障策略。当前仅支持 apf；后续会在此加入基于滚动栅格的 A* 模式。
+  avoidance:
+    mode: apf
+
+  # APF 模式的目标吸引与 LiDAR 障碍规避参数。
   apf:
     target_desired_distance_m: 1.00         # 与 ALX 目标保持的期望距离。
     target_stop_distance_m: 0.80            # 小于该距离时停止靠近目标。

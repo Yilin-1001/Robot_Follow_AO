@@ -271,6 +271,22 @@ lidar_alx_assisted_follow:
         path = write_valid_base_config(tmp_path)
         config = load_prototype_config(path)
         assert config is not None
+        assert config.avoidance.mode == "apf"
+
+    def test_unimplemented_avoidance_mode_is_rejected(self, tmp_path: Path) -> None:
+        """A future planner cannot be selected before it has a safe implementation."""
+        from robot_follow.lidar_alx_assisted_follow.config import load_prototype_config
+
+        path = write_yaml(
+            tmp_path,
+            """
+lidar_alx_assisted_follow:
+  avoidance:
+    mode: grid_astar
+""",
+        )
+        with pytest.raises(ValueError, match="grid_astar mode is not implemented"):
+            load_prototype_config(path)
 
 
 class TestConfigAdapters:

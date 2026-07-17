@@ -338,7 +338,7 @@ def test_strategy_timeout_dispatches_zero():
         "robot_follow.lidar_alx_assisted_follow.runtime.controller.preprocess_tracking_cloud",
         return_value=preprocessed,
     ), patch(
-        "robot_follow.lidar_alx_assisted_follow.runtime.controller.compute_apf",
+        "robot_follow.lidar_alx_assisted_follow.motion.avoidance.apf_strategy.compute_apf",
         return_value=APFResult(intent=apf_intent, stop_reason=None),
     ), patch(
         "robot_follow.lidar_alx_assisted_follow.runtime.controller.time.monotonic",
@@ -397,7 +397,7 @@ def test_runtime_logs_the_slew_limited_command_not_the_apf_request():
         "robot_follow.lidar_alx_assisted_follow.runtime.controller.preprocess_tracking_cloud",
         return_value=preprocessed,
     ), patch(
-        "robot_follow.lidar_alx_assisted_follow.runtime.controller.compute_apf",
+        "robot_follow.lidar_alx_assisted_follow.motion.avoidance.apf_strategy.compute_apf",
         return_value=APFResult(intent=apf_intent, stop_reason=None),
     ), patch(
         "robot_follow.lidar_alx_assisted_follow.runtime.controller.time.monotonic",
@@ -460,7 +460,7 @@ def test_runtime_passes_time_matched_alx_position_only_to_apf():
         "robot_follow.lidar_alx_assisted_follow.runtime.controller.preprocess_tracking_cloud",
         side_effect=[first_cloud, second_cloud],
     ), patch(
-        "robot_follow.lidar_alx_assisted_follow.runtime.controller.compute_apf",
+        "robot_follow.lidar_alx_assisted_follow.motion.avoidance.apf_strategy.compute_apf",
         side_effect=record_apf,
     ):
         runtime._process_cloud(make_cloud_snapshot(1, 9.99), alx, now=10.0)
@@ -516,7 +516,7 @@ def test_strategy_older_than_end_to_end_budget_dispatches_zero():
         "robot_follow.lidar_alx_assisted_follow.runtime.controller.preprocess_tracking_cloud",
         return_value=preprocessed,
     ), patch(
-        "robot_follow.lidar_alx_assisted_follow.runtime.controller.compute_apf",
+        "robot_follow.lidar_alx_assisted_follow.motion.avoidance.apf_strategy.compute_apf",
         return_value=APFResult(intent=apf_intent, stop_reason=None),
     ), patch(
         "robot_follow.lidar_alx_assisted_follow.runtime.controller.time.monotonic",

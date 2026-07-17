@@ -33,6 +33,15 @@ src/robot_follow/
   sim/
     mock_motion_bridge.py    # 不驱动硬件的模拟运动桥
     GUI_sim/                 # GUI 仿真相关模块
+  lidar_alx_assisted_follow/ # 当前 LiDAR + ALX 跟随主链路
+    sensors/                 # ALX、点云和手环状态输入
+    tracking/                # 点云预处理与 ALX 位置滤波
+    motion/
+      avoidance/             # 可插拔避障模式；当前为 APF
+      apf.py                 # APF 具体算法（兼容旧导入）
+    runtime/                 # 云驱动控制循环、日志和状态
+    web/                     # 原型监控与控制界面
+  ao/                        # FAST-LIO 点云源、雷达服务与旧 AO viewer 复用层
 
 configs/
   jetson_g1_safe.yaml        # Jetson + G1 现场测试保守配置
@@ -287,6 +296,16 @@ conda run -n robot-follow pytest tests/real/test_alx_source.py
 - 分离线程：Web 线程负责 WebSocket，控制线程负责策略计算和 G1 指令分发
 - 安全优先：任何线程都可以请求 STOP，只有控制线程可以清除
 - 临时校准：当前使用临时校准参数，未经过真实硬件验证
+
+### 局部避障模式
+
+`avoidance.mode` 是 LiDAR + ALX 主链路唯一的避障选择入口。目前只支持
+`apf`，其参数位于相邻的 `apf` 配置段。运行时通过统一的
+`AvoidanceInput -> AvoidanceResult` 接口调用避障策略；未来的滚动栅格 +
+A* 模式会实现相同接口，而不会改动 ALX 匹配、硬停止、限速或 G1 指令分发。
+
+`grid_astar` 目前尚未实现，配置为该模式会在加载配置时明确失败，绝不会悄悄
+降级到 APF 后继续驱动机器人。
 
 ### 快速开始
 

@@ -323,6 +323,24 @@ class ConfidenceConfig:
 
 
 @dataclass(frozen=True)
+class AvoidanceConfig:
+    """Selection of the local obstacle-avoidance implementation.
+
+    The strategy boundary is in place for the planned local grid/A* mode, but
+    APF is the only selectable mode until that planner has safety tests and a
+    production implementation.
+    """
+
+    mode: str = "apf"
+
+    def __post_init__(self) -> None:
+        if self.mode != "apf":
+            raise ValueError(
+                "avoidance.mode must be 'apf'; the planned grid_astar mode is not implemented"
+            )
+
+
+@dataclass(frozen=True)
 class APFConfig:
     """Continuous follow/avoidance configuration.
 
@@ -524,6 +542,7 @@ class PrototypeConfig:
     target: TargetConfig = field(default_factory=TargetConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     confidence: ConfidenceConfig = field(default_factory=ConfidenceConfig)
+    avoidance: AvoidanceConfig = field(default_factory=AvoidanceConfig)
     apf: APFConfig = field(default_factory=APFConfig)
     output_motion: OutputMotionConfig = field(default_factory=OutputMotionConfig)
     web: WebConfig = field(default_factory=WebConfig)

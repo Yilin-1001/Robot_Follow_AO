@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 
@@ -24,39 +23,25 @@ from robot_follow.lidar_alx_assisted_follow.config.schema import (
 )
 from robot_follow.lidar_alx_assisted_follow.domain.models import (
     MotionIntent,
-    PreprocessedCloud,
     StopReason,
+)
+from robot_follow.lidar_alx_assisted_follow.motion.avoidance_types import (
+    AvoidanceInput,
+    AvoidanceResult,
 )
 
 
-@dataclass(frozen=True)
-class APFInput:
-    """Input for one cloud-synchronous follow/avoidance pass."""
-
-    cloud: PreprocessedCloud
-    target_center_xy: Tuple[float, float]
-    target_mask: np.ndarray  # ALX target returns, excluded from obstacle terms
-    sequence: int
-    alx_body_xy: Optional[np.ndarray] = None
-    target_retreat_active: bool = False
-    # Transitional constructor compatibility for offline callers. It is not a
-    # motion gate in the direct-ALX pipeline.
-    confidence: object | None = None
-
-
-@dataclass(frozen=True)
-class APFResult:
-    """Requested motion and any frame-local safety stop reason."""
-
-    intent: MotionIntent
-    stop_reason: Optional[StopReason]
+# Compatibility aliases: callers of the existing APF module keep working while
+# all avoidance modes now share one cloud-synchronous contract.
+APFInput = AvoidanceInput
+APFResult = AvoidanceResult
 
 
 def compute_apf(
-    input_data: APFInput,
+    input_data: AvoidanceInput,
     config: APFConfig,
     output_config: OutputMotionConfig,
-) -> APFResult:
+) -> AvoidanceResult:
     """Compute a continuous target/corridor/repulsion follow command.
 
     This adapts the ``jie_deamon`` LaserScan controller to our time-matched
@@ -381,9 +366,14 @@ def _required_hard_clearance(point_xy: np.ndarray, config: APFConfig) -> float:
 
 def _has_hard_clearance_violation(obstacles: np.ndarray, config: APFConfig) -> bool:
     """Return True when any point violates its directional hard clearance."""
+    # A point specified exactly on a configured boundary (for example
+    # 0.45 - 0.25 == 0.20 m) must not flip between stop and pass solely from
+    # binary floating-point representation.  This is many orders below the
+    # sensor uncertainty and does not materially relax the safety boundary.
+    comparison_tolerance_m = 1e-9
     return any(
         _compute_body_clearance(point[:2], config)
-        <= _required_hard_clearance(point[:2], config)
+        < _required_hard_clearance(point[:2], config) - comparison_tolerance_m
         for point in obstacles
     )
 

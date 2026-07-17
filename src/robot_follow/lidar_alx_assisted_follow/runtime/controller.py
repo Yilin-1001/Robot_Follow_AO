@@ -33,7 +33,10 @@ from robot_follow.lidar_alx_assisted_follow.domain.models import (
 from robot_follow.lidar_alx_assisted_follow.motion.apf import (
     APFInput,
     APFResult,
-    compute_apf,
+)
+from robot_follow.lidar_alx_assisted_follow.motion.avoidance import (
+    AvoidanceStrategy,
+    build_avoidance_strategy,
 )
 from robot_follow.lidar_alx_assisted_follow.motion.dispatch import (
     G1BridgeProtocol,
@@ -177,6 +180,15 @@ class LidarALXAssistedFollowRuntime:
     _bridge_initialized: bool = False
     _running: bool = False
     _control_thread: Optional[threading.Thread] = None
+    _avoidance_strategy: AvoidanceStrategy = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Bind the configured obstacle-avoidance mode once at startup."""
+        self._avoidance_strategy = build_avoidance_strategy(
+            self.config.avoidance,
+            self.config.apf,
+            self.config.output_motion,
+        )
 
     def start(self) -> None:
         """Start the control loop thread."""
@@ -616,7 +628,8 @@ class LidarALXAssistedFollowRuntime:
 
         target_mask = self._alx_target_mask(preprocessed, alx_body_xy)
 
-        # Run APF
+        # Run the configured local avoidance mode. APF remains the default;
+        # grid/A* will later implement the same input/result contract.
         apf_input = APFInput(
             cloud=preprocessed,
             target_center_xy=(float(alx_body_xy[0]), float(alx_body_xy[1])),
@@ -626,7 +639,7 @@ class LidarALXAssistedFollowRuntime:
             target_retreat_active=self._state.target_retreat_active,
         )
 
-        apf_result = compute_apf(apf_input, self.config.apf, self.config.output_motion)
+        apf_result = self._avoidance_strategy.compute(apf_input)
         apf_result = self._guard_automatic_escape(apf_result, cloud.sequence, now)
         apf_result = self._guard_target_retreat(apf_result, cloud.sequence, now)
 
