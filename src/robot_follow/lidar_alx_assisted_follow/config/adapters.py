@@ -23,6 +23,7 @@ def build_radar_service_config(config: PrototypeConfig) -> AORadarServiceConfig:
     """
     return AORadarServiceConfig(
         idle_stop_s=5.0,  # Not used by prototype
+        static_tf_start_command=config.sensors.static_tf_start_command,
         livox_start_command=config.sensors.livox_start_command,
         fast_lio_start_command=config.sensors.fast_lio_start_command,
         stop_timeout_s=config.sensors.stop_timeout_s,

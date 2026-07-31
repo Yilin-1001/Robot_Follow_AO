@@ -85,9 +85,10 @@ class ALXRosConfig:
             )
         if self.wristband_topic == self.topic:
             raise ValueError("alx_ros.wristband_topic must differ from alx_ros.topic")
-        if self.frame_id != "body":
+        if self.frame_id not in ("body", "base_link"):
             raise ValueError(
-                f"alx_ros.frame_id must be 'body', got {self.frame_id!r}"
+                "alx_ros.frame_id must be 'body' or 'base_link', got "
+                f"{self.frame_id!r}"
             )
         _validate_positive(self.poll_hz, "alx_ros.poll_hz")
         _validate_positive(self.wristband_publish_hz, "alx_ros.wristband_publish_hz")
@@ -99,11 +100,20 @@ class ALXRosConfig:
 
 @dataclass(frozen=True)
 class SensorsConfig:
-    """Sensor topic, body-frame convention, and timing configuration."""
+    """Sensor topic, input-frame convention, and optional static frame transform."""
 
     topic: str = "/cloud_registered_body"
     expected_frame_id: str = "body"
     cloud_y_sign: int = 1
+    output_frame_id: str = "body"
+    apply_body_to_output_transform: bool = False
+    body_to_output_roll_deg: float = 0.0
+    body_to_output_pitch_deg: float = 0.0
+    body_to_output_yaw_deg: float = 0.0
+    body_to_output_x_m: float = 0.0
+    body_to_output_y_m: float = 0.0
+    body_to_output_z_m: float = 0.0
+    static_tf_start_command: str = ""
     max_cloud_age_s: float = 0.25
     ready_timeout_s: float = 10.0
     stop_timeout_s: float = 3.0
@@ -120,6 +130,17 @@ class SensorsConfig:
                 "sensors.cloud_y_sign must be +1 or -1, got "
                 f"{self.cloud_y_sign}"
             )
+        if not self.output_frame_id:
+            raise ValueError("sensors.output_frame_id must be non-empty")
+        for value, name in (
+            (self.body_to_output_roll_deg, "sensors.body_to_output_roll_deg"),
+            (self.body_to_output_pitch_deg, "sensors.body_to_output_pitch_deg"),
+            (self.body_to_output_yaw_deg, "sensors.body_to_output_yaw_deg"),
+            (self.body_to_output_x_m, "sensors.body_to_output_x_m"),
+            (self.body_to_output_y_m, "sensors.body_to_output_y_m"),
+            (self.body_to_output_z_m, "sensors.body_to_output_z_m"),
+        ):
+            _validate_finite(value, name)
         _validate_positive(self.max_cloud_age_s, "sensors.max_cloud_age_s")
         _validate_positive(self.ready_timeout_s, "sensors.ready_timeout_s")
         _validate_positive(self.stop_timeout_s, "sensors.stop_timeout_s")

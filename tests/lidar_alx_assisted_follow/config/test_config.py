@@ -312,6 +312,28 @@ lidar_alx_assisted_follow:
         assert config is not None
         assert config.avoidance.mode == "apf"
 
+    def test_jie_tf_ground_profile_reuses_verified_body_to_base_link_transform(self) -> None:
+        """The TF ground profile must convert FAST-LIO FRD points to G1 FLU."""
+        from robot_follow.lidar_alx_assisted_follow.config import load_prototype_config
+
+        repository_root = Path(__file__).parents[3]
+        config = load_prototype_config(
+            repository_root
+            / "configs/jetson_g1_lidar_alx_assisted_follow_jie_reference_tf_ground.yaml"
+        )
+
+        assert config.output.mode == "real"
+        assert config.alx_ros.frame_id == "base_link"
+        assert config.sensors.expected_frame_id == "body"
+        assert config.sensors.output_frame_id == "base_link"
+        assert config.sensors.apply_body_to_output_transform is True
+        assert config.sensors.body_to_output_roll_deg == 180.0
+        assert config.sensors.body_to_output_z_m == 0.25
+        assert config.sensors.cloud_y_sign == 1
+        assert "static_transform_publisher" in config.sensors.static_tf_start_command
+        assert config.calibration.x_m == 0.10
+        assert config.calibration.lidar_height_m == 1.00
+
     def test_unimplemented_avoidance_mode_is_rejected(self, tmp_path: Path) -> None:
         """A future planner cannot be selected before it has a safe implementation."""
         from robot_follow.lidar_alx_assisted_follow.config import load_prototype_config

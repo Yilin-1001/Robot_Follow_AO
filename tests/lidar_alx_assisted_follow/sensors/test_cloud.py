@@ -132,3 +132,18 @@ class TestSequencedFastLIOPointCloudSource:
             snapshot.points_xyz,
             np.array([[1.2, -0.8, 0.3], [0.7, 0.4, 0.1]]),
         )
+
+    def test_body_to_base_link_transform_applies_frd_to_flu_and_height(self) -> None:
+        source = SequencedFastLIOPointCloudSource(
+            output_frame_id="base_link",
+            apply_body_to_output_transform=True,
+            body_to_output_roll_deg=180.0,
+            body_to_output_z_m=0.25,
+        )
+        source.update_for_test(body_frame(points=[[1.2, 0.8, -0.4]]))
+
+        snapshot = source.latest_snapshot()
+
+        assert snapshot is not None
+        assert snapshot.frame_id == "base_link"
+        assert np.allclose(snapshot.points_xyz, np.array([[1.2, -0.8, 0.65]]))

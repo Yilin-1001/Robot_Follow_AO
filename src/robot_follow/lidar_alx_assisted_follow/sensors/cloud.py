@@ -8,6 +8,7 @@ from typing import Optional
 import numpy as np
 
 from robot_follow.ao.live.fast_lio_source import FastLIOPointCloudSource
+from robot_follow.ao.radar.transform import rotation_matrix_from_rpy_deg, transform_points
 from robot_follow.lidar_alx_assisted_follow.domain import CloudSnapshot
 
 
@@ -25,6 +26,14 @@ class SequencedFastLIOPointCloudSource(FastLIOPointCloudSource):
         expected_frame_id: str = "body",
         require_body_frame: bool = True,
         cloud_y_sign: int = 1,
+        output_frame_id: str = "body",
+        apply_body_to_output_transform: bool = False,
+        body_to_output_roll_deg: float = 0.0,
+        body_to_output_pitch_deg: float = 0.0,
+        body_to_output_yaw_deg: float = 0.0,
+        body_to_output_x_m: float = 0.0,
+        body_to_output_y_m: float = 0.0,
+        body_to_output_z_m: float = 0.0,
     ) -> None:
         super().__init__(
             topic=topic,
@@ -37,7 +46,20 @@ class SequencedFastLIOPointCloudSource(FastLIOPointCloudSource):
         self._event = threading.Event()
         if cloud_y_sign not in (1, -1):
             raise ValueError("cloud_y_sign must be +1 or -1")
+        if not output_frame_id:
+            raise ValueError("output_frame_id must be non-empty")
         self._cloud_y_sign = cloud_y_sign
+        self._output_frame_id = output_frame_id
+        self._apply_body_to_output_transform = apply_body_to_output_transform
+        self._body_to_output_rotation = rotation_matrix_from_rpy_deg(
+            roll_deg=body_to_output_roll_deg,
+            pitch_deg=body_to_output_pitch_deg,
+            yaw_deg=body_to_output_yaw_deg,
+        )
+        self._body_to_output_translation = np.array(
+            [body_to_output_x_m, body_to_output_y_m, body_to_output_z_m],
+            dtype=np.float64,
+        )
 
     @property
     def event(self) -> threading.Event:
@@ -79,14 +101,20 @@ class SequencedFastLIOPointCloudSource(FastLIOPointCloudSource):
         super().update_for_test(frame)
 
         # Build sequenced CloudSnapshot
-        # FAST-LIO's incoming frame has been observed mirrored laterally on
-        # this deployment.  Normalize it here, before tracking, APF and Web
-        # serialization, while retaining +x=forward and the configured body
-        # frame identity.  ALX uses its own already-correct calibration.
+        # Convert FAST-LIO's body/IMU frame into the configured control frame
+        # before tracking, APF and Web serialization.  This must be the same
+        # rigid transform published on /tf_static.  The legacy Y sign remains
+        # available only for older profiles that do not use the full transform.
         points = np.array(frame.points_xyz, dtype=np.float64, copy=True)
         if points.ndim == 1 and points.size == 0:
             points = np.empty((0, 3), dtype=np.float64)
         elif points.ndim == 2 and points.shape[1] >= 2:
+            if self._apply_body_to_output_transform:
+                points = transform_points(
+                    points,
+                    rotation=self._body_to_output_rotation,
+                    translation=self._body_to_output_translation,
+                )
             points[:, 1] *= self._cloud_y_sign
 
         # Make read-only to guarantee immutability
@@ -101,7 +129,7 @@ class SequencedFastLIOPointCloudSource(FastLIOPointCloudSource):
                 received_at_s=frame.received_at_s
                 if frame.received_at_s is not None
                 else 0.0,
-                frame_id=frame.frame_id,
+                frame_id=self._output_frame_id,
                 points_xyz=points,
             )
             self._event.set()

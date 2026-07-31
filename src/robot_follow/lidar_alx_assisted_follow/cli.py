@@ -317,6 +317,14 @@ def build_runtime_from_args(args: argparse.Namespace) -> dict[str, Any]:
         topic=config.sensors.topic,
         expected_frame_id=config.sensors.expected_frame_id,
         cloud_y_sign=config.sensors.cloud_y_sign,
+        output_frame_id=config.sensors.output_frame_id,
+        apply_body_to_output_transform=config.sensors.apply_body_to_output_transform,
+        body_to_output_roll_deg=config.sensors.body_to_output_roll_deg,
+        body_to_output_pitch_deg=config.sensors.body_to_output_pitch_deg,
+        body_to_output_yaw_deg=config.sensors.body_to_output_yaw_deg,
+        body_to_output_x_m=config.sensors.body_to_output_x_m,
+        body_to_output_y_m=config.sensors.body_to_output_y_m,
+        body_to_output_z_m=config.sensors.body_to_output_z_m,
     )
     components["cloud_source"] = cloud_source
 

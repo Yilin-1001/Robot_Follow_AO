@@ -1,0 +1,10 @@
+# Jie 参数参考配置的真实 G1 输出版本。
+#
+# 继承 jie_reference 的 0.40 m 跟随距离、0.35 m 走廊、0.25/0.20/0.25 m
+# APF 距离阈值和 1.0 m/s 速度上限，只将输出切换为 real。
+# 仅在空旷区域、有人可立即急停、确认 G1 处于可运动状态时使用。
+extends: jetson_g1_lidar_alx_assisted_follow_jie_reference.yaml
+
+lidar_alx_assisted_follow:
+  output:
+    mode: real

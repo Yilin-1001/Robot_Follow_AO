@@ -99,6 +99,7 @@ class AOAvoidanceConfig:
 @dataclass(frozen=True)
 class AORadarServiceConfig:
     idle_stop_s: float = 5.0
+    static_tf_start_command: str = ""
     livox_start_command: str = ""
     fast_lio_start_command: str = ""
     stop_timeout_s: float = 3.0

@@ -61,6 +61,25 @@ def test_ensure_running_starts_livox_then_fast_lio_once() -> None:
     assert manager.state == RadarServiceState.RUNNING
 
 
+def test_ensure_running_starts_optional_static_tf_before_sensors() -> None:
+    popen = FakePopenFactory()
+    manager = RadarServiceManager(
+        AORadarServiceConfig(
+            static_tf_start_command="start_static_tf",
+            livox_start_command="start_livox",
+            fast_lio_start_command="start_fast_lio",
+        ),
+        popen_factory=popen,
+        signal_process_group=missing_process_group,
+    )
+
+    manager.ensure_running()
+    manager.stop()
+
+    assert popen.commands == ["start_static_tf", "start_livox", "start_fast_lio"]
+    assert all(process.terminated for process in popen.processes)
+
+
 def test_idle_stop_uses_position_frame_age_not_motion_command_age() -> None:
     popen = FakePopenFactory()
     manager = RadarServiceManager(

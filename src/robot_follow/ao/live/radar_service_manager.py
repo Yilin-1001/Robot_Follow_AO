@@ -43,13 +43,14 @@ class RadarServiceManager:
     signal_process_group: Callable[[int, int], None] = os.killpg
 
     def __post_init__(self) -> None:
+        self._static_tf: Optional[ManagedProcess] = None
         self._livox: Optional[ManagedProcess] = None
         self._fast_lio: Optional[ManagedProcess] = None
         self._last_position_at: Optional[float] = None
 
     @property
     def state(self) -> RadarServiceState:
-        if self._livox is None and self._fast_lio is None:
+        if self._static_tf is None and self._livox is None and self._fast_lio is None:
             return RadarServiceState.STOPPED
         return RadarServiceState.RUNNING
 
@@ -61,6 +62,15 @@ class RadarServiceManager:
             raise ValueError("ao_radar.radar.livox_start_command must be configured")
         if not self.config.fast_lio_start_command:
             raise ValueError("ao_radar.radar.fast_lio_start_command must be configured")
+        if self.config.static_tf_start_command and (
+            self._static_tf is None or self._static_tf.poll() is not None
+        ):
+            self._stop_process(self._static_tf)
+            self._static_tf = self.popen_factory(
+                self.config.static_tf_start_command,
+                shell=True,
+                start_new_session=True,
+            )
         if self._livox is None or self._livox.poll() is not None:
             self._stop_process(self._livox)
             self._livox = self.popen_factory(
@@ -85,8 +95,10 @@ class RadarServiceManager:
     def stop(self) -> None:
         self._stop_process(self._fast_lio)
         self._stop_process(self._livox)
+        self._stop_process(self._static_tf)
         self._fast_lio = None
         self._livox = None
+        self._static_tf = None
 
     def _stop_process(self, process: Optional[ManagedProcess]) -> None:
         if process is None:
