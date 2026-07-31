@@ -362,6 +362,8 @@ class APFConfig:
     body_half_length_m: float = 0.30
     body_half_width_m: float = 0.25
     swept_margin_m: float = 0.10
+    # Deprecated compatibility setting.  The target corridor now always ends
+    # at the current ALX target, so its length is no longer configurable.
     lateral_avoidance_length_m: float = 1.20
     lateral_avoidance_half_width_m: float = 0.60
     swept_min_distance_m: float = 0.40

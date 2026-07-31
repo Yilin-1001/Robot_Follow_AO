@@ -139,14 +139,13 @@ def test_left_corridor_obstacle_steers_right_instead_of_stopping() -> None:
     assert result.intent.vy < 0.0
 
 
-def test_obstacle_at_1_8m_in_lateral_avoidance_rectangle_steers_sideways() -> None:
-    """The long-range robot-local zone begins a sidestep before near-field APF."""
+def test_obstacle_in_target_corridor_steers_sideways() -> None:
+    """The robot-to-target corridor begins a sidestep before near-field APF."""
     points = np.array([[2.5, 0.0, 0.2], [1.75, -0.20, 0.2]])
     result = compute_apf(
         make_input(points, target=(2.5, 0.0), target_mask=np.array([True, False])),
         APFConfig(
             non_target_influence_m=1.8,
-            lateral_avoidance_length_m=1.8,
             lateral_avoidance_half_width_m=0.8,
             non_target_hard_stop_clearance_m=0.25,
             slowdown_clearance_m=0.60,
@@ -157,13 +156,12 @@ def test_obstacle_at_1_8m_in_lateral_avoidance_rectangle_steers_sideways() -> No
     assert result.intent.vy > 0.0
 
 
-def test_obstacle_outside_lateral_avoidance_rectangle_does_not_create_sidestep() -> None:
-    points = np.array([[2.5, 0.0, 0.2], [1.81, -0.20, 0.2]])
+def test_obstacle_beyond_target_corridor_does_not_create_sidestep() -> None:
+    points = np.array([[1.8, 0.0, 0.2], [1.81, -0.20, 0.2]])
     result = compute_apf(
-        make_input(points, target=(2.5, 0.0), target_mask=np.array([True, False])),
+        make_input(points, target=(1.8, 0.0), target_mask=np.array([True, False])),
         APFConfig(
             non_target_influence_m=1.8,
-            lateral_avoidance_length_m=1.8,
             lateral_avoidance_half_width_m=0.8,
             repulsion_gain=0.0,
             non_target_hard_stop_clearance_m=0.25,
@@ -173,6 +171,26 @@ def test_obstacle_outside_lateral_avoidance_rectangle_does_not_create_sidestep()
     )
     assert result.stop_reason is None
     assert result.intent.vy == 0.0
+
+
+def test_obstacle_in_angled_target_corridor_is_considered_for_sidestep() -> None:
+    """The corridor rotates with ALX instead of remaining fixed along +x."""
+    points = np.array([[1.5, 1.0, 0.2], [0.53, 0.65, 0.2]])
+    result = compute_apf(
+        make_input(points, target=(1.5, 1.0), target_mask=np.array([True, False])),
+        APFConfig(
+            lateral_avoidance_half_width_m=0.30,
+            repulsion_gain=0.0,
+            non_target_hard_stop_clearance_m=0.05,
+            side_hard_clearance_m=0.05,
+            slowdown_clearance_m=0.20,
+        ),
+        default_output(),
+    )
+    assert result.stop_reason is None
+    # This point is outside the old fixed-forward rectangle (y > 0.30), but
+    # lies in the rotated rectangle from the robot to the ALX target.
+    assert result.intent.vy < 0.0
 
 
 def test_obstacle_outside_local_processing_region_is_not_used_by_apf() -> None:

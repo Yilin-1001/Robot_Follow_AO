@@ -18,10 +18,9 @@ interface StatusFrame {
   target_exclusion?: { kind: string; center_xy: [number, number]; radius_m: number } | null;
   lateral_avoidance_zone?: {
     kind: string;
-    x_min_m: number;
-    x_max_m: number;
-    y_min_m: number;
-    y_max_m: number;
+    start_xy: [number, number];
+    end_xy: [number, number];
+    half_width_m: number;
   } | null;
   alx?: {
     body_xy: [number, number] | null;
@@ -234,25 +233,34 @@ class LiDARMonitor {
     this.ctx.beginPath(); this.ctx.arc(center.x, center.y, exclusion.radius_m * viewport.scale, 0, 2 * Math.PI); this.ctx.stroke(); this.ctx.setLineDash([]);
   }
 
-  private drawLateralAvoidanceZone(zone: { x_min_m: number; x_max_m: number; y_min_m: number; y_max_m: number }): void {
+  private drawLateralAvoidanceZone(zone: { start_xy: [number, number]; end_xy: [number, number]; half_width_m: number }): void {
     const viewport = this.getViewport();
-    const topLeft = this.toCanvas({ x: zone.x_max_m, y: zone.y_max_m }, viewport);
-    const bottomRight = this.toCanvas({ x: zone.x_min_m, y: zone.y_min_m }, viewport);
-    const left = Math.min(topLeft.x, bottomRight.x);
-    const top = Math.min(topLeft.y, bottomRight.y);
-    const width = Math.abs(bottomRight.x - topLeft.x);
-    const height = Math.abs(bottomRight.y - topLeft.y);
+    const start = { x: zone.start_xy[0], y: zone.start_xy[1] };
+    const end = { x: zone.end_xy[0], y: zone.end_xy[1] };
+    const length = Math.hypot(end.x - start.x, end.y - start.y);
+    if (length <= Number.EPSILON) return;
+    const normal = { x: -(end.y - start.y) / length, y: (end.x - start.x) / length };
+    const corners = [
+      { x: start.x + normal.x * zone.half_width_m, y: start.y + normal.y * zone.half_width_m },
+      { x: end.x + normal.x * zone.half_width_m, y: end.y + normal.y * zone.half_width_m },
+      { x: end.x - normal.x * zone.half_width_m, y: end.y - normal.y * zone.half_width_m },
+      { x: start.x - normal.x * zone.half_width_m, y: start.y - normal.y * zone.half_width_m },
+    ].map((corner) => this.toCanvas(corner, viewport));
     this.ctx.save();
     this.ctx.fillStyle = "rgba(240, 180, 41, 0.08)";
     this.ctx.strokeStyle = AVOIDANCE_ZONE_COLOR;
     this.ctx.lineWidth = 1.5;
     this.ctx.setLineDash([6, 4]);
-    this.ctx.fillRect(left, top, width, height);
-    this.ctx.strokeRect(left, top, width, height);
+    this.ctx.beginPath();
+    this.ctx.moveTo(corners[0].x, corners[0].y);
+    corners.slice(1).forEach((corner) => this.ctx.lineTo(corner.x, corner.y));
+    this.ctx.closePath();
+    this.ctx.fill();
+    this.ctx.stroke();
     this.ctx.setLineDash([]);
     this.ctx.font = "11px monospace";
     this.ctx.fillStyle = AVOIDANCE_ZONE_COLOR;
-    this.ctx.fillText("LATERAL AVOIDANCE · 1.8 m", left + 5, top + 14);
+    this.ctx.fillText(`TARGET CORRIDOR · ${length.toFixed(2)} m`, corners[0].x + 5, corners[0].y + 14);
     this.ctx.restore();
   }
 

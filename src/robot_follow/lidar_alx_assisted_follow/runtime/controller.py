@@ -990,13 +990,16 @@ class LidarALXAssistedFollowRuntime:
                     if alx_xy is not None
                     else None
                 ),
-                "lateral_avoidance_zone": {
-                    "kind": "rectangle",
-                    "x_min_m": 0.0,
-                    "x_max_m": self.config.apf.lateral_avoidance_length_m,
-                    "y_min_m": -self.config.apf.lateral_avoidance_half_width_m,
-                    "y_max_m": self.config.apf.lateral_avoidance_half_width_m,
-                },
+                "lateral_avoidance_zone": (
+                    {
+                        "kind": "target_corridor",
+                        "start_xy": [0.0, 0.0],
+                        "end_xy": alx_xy.tolist(),
+                        "half_width_m": self.config.apf.lateral_avoidance_half_width_m,
+                    }
+                    if alx_xy is not None
+                    else None
+                ),
                 "alx": {
                     "body_xy": alx_xy.tolist() if alx_xy is not None else None,
                     "age_s": self._state.last_alx_age_ms / 1000.0,

@@ -118,8 +118,7 @@ lidar_alx_assisted_follow:
     body_half_length_m: 0.30                # 机器人机身半长。
     body_half_width_m: 0.225                # 机器人机身半宽；对应 450 mm 肩宽的一半。
     swept_margin_m: 0.10                    # 运动扫掠区域附加安全边界。
-    lateral_avoidance_length_m: 1.80        # 前方横移避障矩形长度。
-    lateral_avoidance_half_width_m: 0.45    # 横移避障矩形半宽（总宽=半宽*2）。
+    lateral_avoidance_half_width_m: 0.45    # ALX 目标连线避障走廊的半宽（总宽=半宽*2）；长度随目标距离变化。
     swept_min_distance_m: 0.40              # 扫掠检测的最小净空。
     swept_horizon_s: 1.00                   # 扫掠检测的预测时间窗。
     attraction_gain: 0.60                   # 目标吸引增益；大则更积极靠近目标。

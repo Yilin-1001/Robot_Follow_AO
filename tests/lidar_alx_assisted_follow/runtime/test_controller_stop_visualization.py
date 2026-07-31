@@ -72,14 +72,40 @@ def test_hard_stop_still_publishes_preprocessed_cloud_for_web():
     _, status = latest_status.snapshot()
     preprocess.assert_called_once()
     assert status["points"] == points.tolist()
-    assert status["lateral_avoidance_zone"] == {
-        "kind": "rectangle",
-        "x_min_m": 0.0,
-        "x_max_m": config.apf.lateral_avoidance_length_m,
-        "y_min_m": -config.apf.lateral_avoidance_half_width_m,
-        "y_max_m": config.apf.lateral_avoidance_half_width_m,
-    }
+    assert status["lateral_avoidance_zone"] is None
     assert status["stop"]["reason"] == "user_stop"
+
+
+def test_web_publishes_oriented_target_corridor() -> None:
+    """The visualization corridor must end at the current ALX target."""
+    config = PrototypeConfig()
+    latest_status = LatestStatus()
+    runtime = LidarALXAssistedFollowRuntime(
+        config=config,
+        cloud_source=Mock(),
+        alx_reader=Mock(),
+        alx_buffer=ALXSnapshotBuffer(config.alx, config.calibration),
+        lifecycle=WristbandLifecycleGuardian(config.sensors.ready_timeout_s),
+        radar_services=Mock(),
+        target_manager=TargetLockManager(config.target),
+        stop_latch=StopLatch(control_thread_id=0),
+        event_inbox=ControlEventInbox(),
+        latest_status=latest_status,
+        limiter=CommandSlewRateLimiter(config.output_motion),
+        bridge=Mock(),
+        csv_logger=Mock(),
+    )
+    runtime._state.last_alx_body_xy = np.array([1.5, 0.5], dtype=np.float64)
+
+    runtime._publish_status(cloud=None, preprocessed=None, now_s=10.0)
+
+    _, status = latest_status.snapshot()
+    assert status["lateral_avoidance_zone"] == {
+        "kind": "target_corridor",
+        "start_xy": [0.0, 0.0],
+        "end_xy": [1.5, 0.5],
+        "half_width_m": config.apf.lateral_avoidance_half_width_m,
+    }
 
 
 def test_no_target_still_publishes_preprocessed_cloud_for_web():

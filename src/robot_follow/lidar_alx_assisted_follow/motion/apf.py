@@ -100,17 +100,17 @@ def compute_apf(
     vx_target = 0.0 if abs(forward_error) < 0.05 else config.attraction_gain * forward_error
     omega = config.omega_gain * math.atan2(float(target_xy[1]), float(target_xy[0]))
 
-    # 2. Lateral avoidance: points in the configured robot-local rectangle
-    # steer sideways before they enter the near-field APF zone. An obstacle on
-    # the right produces positive vy (move left), and vice versa.
-    vy_corridor = _corridor_lateral_velocity(obstacles, config)
+    # 2. Target-corridor avoidance: the corridor is the rectangle from the
+    # robot to the time-matched ALX target, rather than a fixed forward box.
+    # This makes the long-range sidestep decision match the actual follow path.
+    corridor_velocity = _target_corridor_velocity(obstacles, target_xy, config)
 
     # 3. APF repulsion: sum inverse-distance repulsive velocity contributions
     # inside the influence radius, then cap their resultant magnitude.
     repulse = _repulsion_velocity(obstacles, config)
 
-    vx = vx_target + float(repulse[0])
-    vy = vy_corridor + float(repulse[1])
+    vx = vx_target + float(corridor_velocity[0]) + float(repulse[0])
+    vy = float(corridor_velocity[1]) + float(repulse[1])
 
     # jie_deamon slows only forward motion near an obstacle, retaining lateral
     # authority so the robot can continue to sidestep around it.
@@ -378,21 +378,33 @@ def _has_hard_clearance_violation(obstacles: np.ndarray, config: APFConfig) -> b
     )
 
 
-def _corridor_lateral_velocity(
+def _target_corridor_velocity(
     obstacles: np.ndarray,
+    target_xy: np.ndarray,
     config: APFConfig,
-) -> float:
-    """Compute lateral centering in the robot-local avoidance rectangle."""
+) -> np.ndarray:
+    """Steer away from obstacles inside the robot-to-target corridor.
+
+    The corridor centre line starts at the robot origin and ends at the
+    current ALX target.  Its half width is configured in the robot-local
+    frame, while its orientation and length come from the target itself.
+    """
+    target_distance = float(np.linalg.norm(target_xy))
+    if target_distance <= 1e-9:
+        return np.zeros(2, dtype=np.float64)
+
+    forward = target_xy / target_distance
+    left_normal = np.array([-forward[1], forward[0]], dtype=np.float64)
     half_width = config.lateral_avoidance_half_width_m
     left_inner = -half_width
     right_inner = half_width
 
     for point in obstacles:
         xy = point[:2]
-        longitudinal = float(xy[0])
-        lateral = float(xy[1])
+        longitudinal = float(np.dot(xy, forward))
+        lateral = float(np.dot(xy, left_normal))
         if (
-            0.0 <= longitudinal <= config.lateral_avoidance_length_m
+            0.0 <= longitudinal <= target_distance
             and abs(lateral) <= half_width
         ):
             if lateral > 0.0:
@@ -402,8 +414,8 @@ def _corridor_lateral_velocity(
 
     lateral_error = -(left_inner + right_inner)
     if abs(lateral_error) < 0.03:
-        return 0.0
-    return config.corridor_gain * lateral_error
+        return np.zeros(2, dtype=np.float64)
+    return config.corridor_gain * lateral_error * left_normal
 
 
 def _repulsion_velocity(obstacles: np.ndarray, config: APFConfig) -> np.ndarray:
