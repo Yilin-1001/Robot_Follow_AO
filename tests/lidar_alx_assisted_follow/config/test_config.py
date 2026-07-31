@@ -139,6 +139,45 @@ lidar_alx_assisted_follow:
 class TestConfigValidation:
     """Test configuration validation rules."""
 
+    def test_extends_preserves_base_settings_and_overrides_requested_values(
+        self, tmp_path: Path
+    ) -> None:
+        """A reference profile may override only the parameters it changes."""
+        from robot_follow.lidar_alx_assisted_follow.config import load_prototype_config
+
+        base_path = tmp_path / "base.yaml"
+        base_path.write_text(
+            """
+lidar_alx_assisted_follow:
+  alx:
+    port: /dev/custom-alx
+  apf:
+    target_desired_distance_m: 1.0
+    target_stop_distance_m: 0.8
+    attraction_gain: 0.6
+""",
+            encoding="utf-8",
+        )
+        profile_path = tmp_path / "profile.yaml"
+        profile_path.write_text(
+            """
+extends: base.yaml
+lidar_alx_assisted_follow:
+  apf:
+    target_desired_distance_m: 0.4
+    target_stop_distance_m: 0.1
+    attraction_gain: 0.5
+""",
+            encoding="utf-8",
+        )
+
+        config = load_prototype_config(profile_path)
+
+        assert config.alx.port == "/dev/custom-alx"
+        assert config.apf.target_desired_distance_m == 0.4
+        assert config.apf.target_stop_distance_m == 0.1
+        assert config.apf.attraction_gain == 0.5
+
     def test_unknown_nested_key_is_rejected(self, tmp_path: Path) -> None:
         """Unknown keys in nested sections should raise ValueError."""
         from robot_follow.lidar_alx_assisted_follow.config import load_prototype_config

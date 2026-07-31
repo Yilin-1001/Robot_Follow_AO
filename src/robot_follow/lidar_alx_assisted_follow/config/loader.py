@@ -46,14 +46,19 @@ def load_prototype_config(path: Path) -> PrototypeConfig:
     FileNotFoundError
         If configuration file does not exist.
     """
+    return _build_config(_load_config_root(path.resolve(), set()))
+
+
+def _load_config_root(path: Path, inheritance_chain: Set[Path]) -> Dict[str, Any]:
+    """Load one config root, resolving an optional relative ``extends`` file."""
+    if path in inheritance_chain:
+        raise ValueError(f"configuration inheritance cycle detected at {path}")
     if not path.exists():
         raise FileNotFoundError(f"configuration file not found: {path}")
 
-    text = path.read_text(encoding="utf-8")
-    loaded = yaml.safe_load(text)
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     if loaded is None:
         raise ValueError(f"configuration file {path} is empty")
-
     if not isinstance(loaded, dict):
         raise ValueError(f"configuration file {path} must be a mapping")
 
@@ -62,11 +67,30 @@ def load_prototype_config(path: Path) -> PrototypeConfig:
         raise ValueError(
             f"configuration file {path} must have 'lidar_alx_assisted_follow' root key"
         )
-
     if not isinstance(root, dict):
         raise ValueError("'lidar_alx_assisted_follow' must be a mapping")
 
-    return _build_config(root)
+    base_config = loaded.get("extends")
+    if base_config is None:
+        return root
+    if not isinstance(base_config, str) or not base_config:
+        raise ValueError(f"configuration file {path} has invalid 'extends' value")
+
+    base_path = (path.parent / base_config).resolve()
+    base_root = _load_config_root(base_path, inheritance_chain | {path})
+    return _merge_mappings(base_root, root)
+
+
+def _merge_mappings(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge an override mapping without mutating its base."""
+    merged: Dict[str, Any] = dict(base)
+    for key, value in override.items():
+        base_value = merged.get(key)
+        if isinstance(base_value, dict) and isinstance(value, dict):
+            merged[key] = _merge_mappings(base_value, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 T = TypeVar("T")

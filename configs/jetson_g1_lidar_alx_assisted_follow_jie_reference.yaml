@@ -1,0 +1,56 @@
+# Jie Deamon 参数参考配置（默认 mock 输出）。
+#
+# 该文件继承当前 G1 配置，只覆盖 Jie Deamon 中存在对应项的参数，
+# 因此保留 ALX、FAST-LIO、标定、地面高度过滤、Web 与日志等现场设置。
+# 当前控制器仍以 G1 矩形机身净空计算硬停，不会变成 Jie 的“点到原点
+# 小于 0.20 m”模型；本配置用于对比参数，首次运行不得用于真实运动输出。
+extends: jetson_g1_lidar_alx_assisted_follow.yaml
+
+lidar_alx_assisted_follow:
+  g1:
+    # 对应 Jie 的 MAX_LINEAR_SPEED / MAX_ANGULAR_SPEED；仅 mock 对比用。
+    max_vx: 1.0
+    max_abs_vy: 1.0
+    max_abs_omega: 1.0
+
+  output:
+    mode: mock
+
+  target:
+    # Jie 不使用全局最小量程；保留当前地面高度和点云上限过滤。
+    radial_min_m: 0.0
+    # Jie TARGET_RADIUS。
+    web_pick_radius_m: 0.30
+    # Jie 的机器人框架排除区域：x ∈ (-0.35, 0.15)，|y| < 0.15。
+    self_x_min_m: -0.35
+    self_x_max_m: 0.15
+    self_abs_y_max_m: 0.15
+
+  apf:
+    # Jie FOLLOW_DIST；target_stop_distance_m 是当前控制器必需的额外安全门限。
+    target_desired_distance_m: 0.40
+    target_stop_distance_m: 0.10
+    # Jie APF_INFLUENCE_DIST / APF_EMERGENCY_DIST / APF_SLOWDOWN_DIST。
+    non_target_influence_m: 0.25
+    non_target_hard_stop_clearance_m: 0.20
+    side_hard_clearance_m: 0.20
+    slowdown_clearance_m: 0.25
+    # Jie RECTANGLE_WIDTH = 0.35 m。
+    lateral_avoidance_half_width_m: 0.175
+    # Jie LINEAR_SCALE_FACTOR / LINEAR_Y_SCALE_FACTOR /
+    # APF_REPULSE_GAIN / repulsion magnitude cap / ANGULAR_SCALE_FACTOR。
+    attraction_gain: 0.50
+    corridor_gain: 1.00
+    repulsion_gain: 0.01
+    repulsion_cap: 1.00
+    omega_gain: 1.00
+    # Jie 没有自动后退脱困或目标退让状态机。
+    automatic_target_retreat_enabled: false
+    automatic_escape_enabled: false
+
+  output_motion:
+    # 对应 Jie 的线速度和角速度统一上限；mock 模式下用于比较输出。
+    max_vx: 1.0
+    max_reverse_vx: 1.0
+    max_abs_vy: 1.0
+    max_abs_omega: 1.0
