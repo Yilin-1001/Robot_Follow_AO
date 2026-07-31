@@ -72,6 +72,11 @@ def test_hard_stop_still_publishes_preprocessed_cloud_for_web():
     _, status = latest_status.snapshot()
     preprocess.assert_called_once()
     assert status["points"] == points.tolist()
+    assert status["point_height_range"] == {
+        "min_m": config.target.physical_height_min_m,
+        "max_m": config.target.physical_height_max_m,
+        "offset_m": config.calibration.lidar_height_m,
+    }
     assert status["lateral_avoidance_zone"] is None
     assert status["stop"]["reason"] == "user_stop"
 

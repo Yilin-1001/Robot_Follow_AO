@@ -312,8 +312,8 @@ lidar_alx_assisted_follow:
         assert config is not None
         assert config.avoidance.mode == "apf"
 
-    def test_jie_tf_ground_profile_reuses_verified_body_to_base_link_transform(self) -> None:
-        """The TF ground profile must convert FAST-LIO FRD points to G1 FLU."""
+    def test_jie_tf_ground_profile_uses_gravity_aligned_body_to_base_link_transform(self) -> None:
+        """The TF ground profile must use the rosbag-calibrated FRD-to-FLU transform."""
         from robot_follow.lidar_alx_assisted_follow.config import load_prototype_config
 
         repository_root = Path(__file__).parents[3]
@@ -327,7 +327,9 @@ lidar_alx_assisted_follow:
         assert config.sensors.expected_frame_id == "body"
         assert config.sensors.output_frame_id == "base_link"
         assert config.sensors.apply_body_to_output_transform is True
-        assert config.sensors.body_to_output_roll_deg == 180.0
+        assert config.sensors.body_to_output_roll_deg == -178.081392
+        assert config.sensors.body_to_output_pitch_deg == 32.651169
+        assert config.sensors.body_to_output_yaw_deg == 1.035408
         assert config.sensors.body_to_output_z_m == 0.25
         assert config.sensors.cloud_y_sign == 1
         assert "static_transform_publisher" in config.sensors.static_tf_start_command

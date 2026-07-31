@@ -14,9 +14,11 @@ lidar_alx_assisted_follow:
     # body (FRD) -> base_link (FLU): (x, y, z) -> (x, -y, -z) + (0, 0, 0.25)
     output_frame_id: base_link
     apply_body_to_output_transform: true
-    body_to_output_roll_deg: 180.0
-    body_to_output_pitch_deg: 0.0
-    body_to_output_yaw_deg: 0.0
+    # From the 2026-07-31 stationary MID360 rosbag: align IMU gravity to
+    # base_link +Z so the floor is at physical height 0 m.
+    body_to_output_roll_deg: -178.081392
+    body_to_output_pitch_deg: 32.651169
+    body_to_output_yaw_deg: 1.035408
     body_to_output_x_m: 0.0
     body_to_output_y_m: 0.0
     body_to_output_z_m: 0.25
@@ -25,7 +27,7 @@ lidar_alx_assisted_follow:
     static_tf_start_command: >-
       ros2 run tf2_ros static_transform_publisher
       --x 0.0 --y 0.0 --z 0.25
-      --roll 3.141592653589793 --pitch 0.0 --yaw 0.0
+      --roll -3.108106620964 --pitch 0.569870397122 --yaw 0.018071270809
       --frame-id body --child-frame-id base_link
 
   calibration:

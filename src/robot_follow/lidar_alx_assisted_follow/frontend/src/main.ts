@@ -15,6 +15,7 @@ interface StatusFrame {
   cloud_sequence: number;
   frame_id: string;
   points: Point3D[];
+  point_height_range?: { min_m: number; max_m: number; offset_m: number };
   target_exclusion?: { kind: string; center_xy: [number, number]; radius_m: number } | null;
   lateral_avoidance_zone?: {
     kind: string;
@@ -52,6 +53,8 @@ const POINT_COLOR = "#9fdcff";
 const ALX_COLOR = "#3fb950";
 const EXCLUSION_COLOR = "#bc8cff";
 const AVOIDANCE_ZONE_COLOR = "#f0b429";
+const HEIGHT_LEGEND_WIDTH_PX = 104;
+const HEIGHT_LEGEND_HEIGHT_PX = 8;
 const MAX_SCALE = 80;
 const MIN_SCALE = 28;
 const VIEWPORT_PADDING_PX = 28;
@@ -205,11 +208,12 @@ class LiDARMonitor {
     this.drawGrid();
     this.drawALXTrail();
     if (this.latestFrame) {
-      this.drawPoints(this.latestFrame.points);
+      this.drawPoints(this.latestFrame.points, this.latestFrame.point_height_range);
       if (this.latestFrame.lateral_avoidance_zone) this.drawLateralAvoidanceZone(this.latestFrame.lateral_avoidance_zone);
       if (this.latestFrame.target_exclusion) this.drawExclusion(this.latestFrame.target_exclusion);
       const alx = this.latestFrame.alx;
       if (alx?.body_xy) this.drawALX(alx.body_xy, alx.synchronized);
+      this.drawHeightLegend(this.latestFrame.point_height_range);
     }
     this.drawRobotHeading();
   }
@@ -222,9 +226,47 @@ class LiDARMonitor {
     for (let y = viewport.centerY % step; y < this.canvas.height; y += step) { this.ctx.beginPath(); this.ctx.moveTo(0, y); this.ctx.lineTo(this.canvas.width, y); this.ctx.stroke(); }
   }
 
-  private drawPoints(points: Point3D[]): void {
-    const viewport = this.getViewport(); this.ctx.fillStyle = POINT_COLOR;
-    points.forEach((point) => { const p = this.toCanvas({ x: point[0], y: point[1] }, viewport); this.ctx.beginPath(); this.ctx.arc(p.x, p.y, 1, 0, 2 * Math.PI); this.ctx.fill(); });
+  private drawPoints(
+    points: Point3D[],
+    heightRange?: { min_m: number; max_m: number; offset_m: number },
+  ): void {
+    const viewport = this.getViewport();
+    points.forEach((point) => {
+      const p = this.toCanvas({ x: point[0], y: point[1] }, viewport);
+      this.ctx.fillStyle = heightRange
+        ? this.heightColor(point[2] + heightRange.offset_m, heightRange)
+        : POINT_COLOR;
+      this.ctx.beginPath(); this.ctx.arc(p.x, p.y, 1, 0, 2 * Math.PI); this.ctx.fill();
+    });
+  }
+
+  private heightColor(
+    heightM: number,
+    range: { min_m: number; max_m: number; offset_m: number },
+  ): string {
+    const span = Math.max(Number.EPSILON, range.max_m - range.min_m);
+    const ratio = Math.min(1, Math.max(0, (heightM - range.min_m) / span));
+    // Red (low) -> yellow/green -> cyan -> blue (high).
+    return `hsl(${220 * ratio}, 92%, 62%)`;
+  }
+
+  private drawHeightLegend(range?: { min_m: number; max_m: number; offset_m: number }): void {
+    if (!range) return;
+    const x = 14; const y = this.canvas.height - 42;
+    const gradient = this.ctx.createLinearGradient(x, y, x + HEIGHT_LEGEND_WIDTH_PX, y);
+    for (const ratio of [0, 0.25, 0.5, 0.75, 1]) gradient.addColorStop(ratio, this.heightColor(range.min_m + (range.max_m - range.min_m) * ratio, range));
+    this.ctx.save();
+    this.ctx.fillStyle = "rgba(11, 14, 20, 0.82)";
+    this.ctx.fillRect(x - 6, y - 17, HEIGHT_LEGEND_WIDTH_PX + 12, 35);
+    this.ctx.fillStyle = gradient;
+    this.ctx.fillRect(x, y, HEIGHT_LEGEND_WIDTH_PX, HEIGHT_LEGEND_HEIGHT_PX);
+    this.ctx.font = "10px monospace";
+    this.ctx.fillStyle = "#c9d1d9";
+    this.ctx.fillText("POINT HEIGHT", x, y - 6);
+    this.ctx.fillText(`${range.min_m.toFixed(2)} m`, x, y + 19);
+    const maxLabel = `${range.max_m.toFixed(2)} m`;
+    this.ctx.fillText(maxLabel, x + HEIGHT_LEGEND_WIDTH_PX - this.ctx.measureText(maxLabel).width, y + 19);
+    this.ctx.restore();
   }
 
   private drawExclusion(exclusion: { center_xy: [number, number]; radius_m: number }): void {

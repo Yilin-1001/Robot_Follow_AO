@@ -981,6 +981,15 @@ class LidarALXAssistedFollowRuntime:
                 "cloud_sequence": cloud.sequence if cloud is not None else None,
                 "frame_id": cloud.frame_id if cloud is not None else None,
                 "points": points,
+                # Points remain 3-D in the Web payload.  Supply the same
+                # physical-height model used by preprocessing so the 2-D
+                # monitor can color each point by its actual height above the
+                # floor rather than its frame-relative Z coordinate.
+                "point_height_range": {
+                    "min_m": self.config.target.physical_height_min_m,
+                    "max_m": self.config.target.physical_height_max_m,
+                    "offset_m": self.config.calibration.lidar_height_m,
+                },
                 "target_exclusion": (
                     {
                         "kind": "circle",
