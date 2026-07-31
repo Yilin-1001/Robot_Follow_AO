@@ -66,7 +66,7 @@ lidar_alx_assisted_follow:
   target:
     radial_min_m: 0.25                      # 保留点的最小水平半径，滤除近距离机身噪声。
     radial_max_m: 3.0                       # 保留点的最大水平半径；3 m 外障碍不参与避障和可视化。
-    physical_height_min_m: 0.03             # 保留点相对地面的最小高度，抑制残余地面点。
+    physical_height_min_m: 0.10             # 保留点相对地面的最小高度，滤除地面和低于 10 cm 的点。
     physical_height_max_m: 2.00             # 保留点相对地面的最大高度。
     self_x_min_m: -0.35                     # 机身自遮挡框的后边界。
     self_x_max_m: 0.25                      # 机身自遮挡框的前边界。
