@@ -35,3 +35,10 @@ lidar_alx_assisted_follow:
     x_m: 0.10
     y_m: 0.0
     lidar_height_m: 1.00
+
+  apf:
+    # Retain Jie target-follow behavior, but permit the base profile's
+    # point-cloud-validated straight reverse escape after a hard-clearance
+    # block.  It brakes first, reverses at 0.20 m/s for at most 5 s, and
+    # returns to a hard stop if the rear sweep is not demonstrably clear.
+    automatic_escape_enabled: true

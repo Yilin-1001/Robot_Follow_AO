@@ -335,6 +335,8 @@ lidar_alx_assisted_follow:
         assert "static_transform_publisher" in config.sensors.static_tf_start_command
         assert config.calibration.x_m == 0.10
         assert config.calibration.lidar_height_m == 1.00
+        assert config.apf.automatic_target_retreat_enabled is False
+        assert config.apf.automatic_escape_enabled is True
 
     def test_unimplemented_avoidance_mode_is_rejected(self, tmp_path: Path) -> None:
         """A future planner cannot be selected before it has a safe implementation."""
