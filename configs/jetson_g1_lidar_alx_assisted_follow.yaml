@@ -128,12 +128,12 @@ lidar_alx_assisted_follow:
     automatic_target_retreat_enabled: true  # 人距过近时启用自动后退以恢复跟随距离。
     target_retreat_start_distance_m: 0.85   # 人距低于此值进入后退模式。
     target_retreat_exit_distance_m: 1.00    # 人距恢复到此值后退出后退模式。
-    target_retreat_speed_mps: 0.10          # 近目标后退的保守平移速度上限。
+    target_retreat_speed_mps: 0.20          # 近目标后退的平移速度上限。
     target_retreat_probe_distance_m: 0.12   # 近目标后退每帧进行点云验证的前瞻距离。
     automatic_escape_enabled: true          # 前方紧急净空触发时，允许点云验证后的自动后退脱困。
-    escape_speed_mps: 0.10                  # 自动后退脱困的速度上限；不允许自动横移。
-    escape_probe_distance_m: 0.35           # 脱困点云扫掠验证距离，覆盖 3 秒内的最大退让并保留余量。
-    escape_max_duration_s: 3.0              # 单次连续脱困最长时间；超时回到硬停止。
+    escape_speed_mps: 0.20                  # 自动后退脱困的速度上限；不允许自动横移。
+    escape_probe_distance_m: 1.10           # 脱困点云扫掠验证距离，覆盖 5 秒内约 1 m 的最大退让并保留余量。
+    escape_max_duration_s: 5.0              # 单次连续脱困最长时间；超时回到硬停止。
     escape_min_clearance_gain_m: 0.02       # 脱困结束时最小净空必须增加的余量。
     omega_gain: 0.80                        # 朝向目标的转向增益。
 
@@ -141,7 +141,7 @@ lidar_alx_assisted_follow:
   output_motion:
     slew_rate_limit_enabled: false          # 不使用加减速度平滑，提升跟随、后退和脱困的响应速度。
     max_vx: 0.9                            # 指令前向速度上限；与 g1.max_vx 一致。
-    max_reverse_vx: 0.10                   # 自动脱困和近目标后退可使用的后退速度上限。
+    max_reverse_vx: 0.20                   # 自动脱困和近目标后退可使用的后退速度上限。
     max_abs_vy: 0.45                        # 指令横向速度绝对上限；与 g1.max_abs_vy 一致。
     max_abs_omega: 1.0                     # 指令角速度绝对上限；与 g1.max_abs_omega 一致。
 
