@@ -87,6 +87,7 @@ class MotionState(str, Enum):
     FOLLOWING = "following"
     TARGET_RETREAT = "target_retreat"
     ESCAPING = "escaping"
+    CLEARANCE_RECOVERY = "clearance_recovery"
     BLOCKED_OBSTACLE = "blocked_obstacle"
     SAFETY_STOP = "safety_stop"
 

@@ -328,6 +328,126 @@ def test_automatic_escape_does_not_sidestep_away_from_side_wall() -> None:
     assert result.intent.vy == 0.0
 
 
+def test_clearance_recovery_uses_body_clearance_repulsion_without_target_motion() -> None:
+    """A side hard-clearance breach produces only a bounded side-step."""
+    result = compute_apf(
+        make_input(
+            np.array([[1.5, 0.0, 0.2], [0.0, 0.40, 0.2]]),
+            target_mask=np.array([True, False]),
+        ),
+        APFConfig(
+            non_target_hard_stop_clearance_m=0.20,
+            side_hard_clearance_m=0.20,
+            body_half_width_m=0.225,
+            clearance_recovery_enabled=True,
+            repulsion_gain=0.01,
+        ),
+        OutputMotionConfig(max_reverse_vx=0.20, max_abs_vy=0.20),
+    )
+
+    assert result.stop_reason is None
+    assert result.intent.reason == "clearance_recovery"
+    assert result.intent.vx == 0.0
+    assert result.intent.vy < 0.0
+    assert result.intent.omega == 0.0
+    assert 0.10 <= np.hypot(result.intent.vx, result.intent.vy) <= 0.15
+
+
+def test_clearance_recovery_holds_minimum_speed_for_slight_intrusion() -> None:
+    """A barely breached side boundary still commands G1's 0.10 m/s minimum."""
+    result = compute_apf(
+        make_input(
+            np.array([[1.5, 0.0, 0.2], [0.0, 0.424, 0.2]]),
+            target_mask=np.array([True, False]),
+        ),
+        APFConfig(
+            non_target_hard_stop_clearance_m=0.20,
+            side_hard_clearance_m=0.20,
+            body_half_width_m=0.225,
+            clearance_recovery_enabled=True,
+        ),
+        OutputMotionConfig(max_reverse_vx=0.20, max_abs_vy=0.20),
+    )
+
+    assert result.stop_reason is None
+    assert result.intent.reason == "clearance_recovery"
+    assert np.isclose(np.hypot(result.intent.vx, result.intent.vy), 0.10025)
+
+
+def test_clearance_recovery_continues_until_exit_margin_is_clear() -> None:
+    """Recovery hysteresis keeps pure repulsion until clearance exceeds 0.22 m."""
+    input_data = make_input(
+        np.array([[1.5, 0.0, 0.2], [0.0, 0.430, 0.2]]),
+        target_mask=np.array([True, False]),
+    )
+    input_data = APFInput(
+        **{**input_data.__dict__, "clearance_recovery_active": True}
+    )
+    result = compute_apf(
+        input_data,
+        APFConfig(
+            non_target_hard_stop_clearance_m=0.20,
+            side_hard_clearance_m=0.20,
+            body_half_width_m=0.225,
+            clearance_recovery_enabled=True,
+        ),
+        OutputMotionConfig(max_reverse_vx=0.20, max_abs_vy=0.20),
+    )
+
+    assert result.stop_reason is None
+    assert result.intent.reason == "clearance_recovery"
+
+
+def test_clearance_recovery_does_not_move_for_rear_only_or_body_internal_points() -> None:
+    """First release never moves forward or reacts to a point inside the body."""
+    rear = compute_apf(
+        make_input(
+            np.array([[1.5, 0.0, 0.2], [-0.49, 0.0, 0.2]]),
+            target_mask=np.array([True, False]),
+        ),
+        APFConfig(
+            non_target_hard_stop_clearance_m=0.20,
+            clearance_recovery_enabled=True,
+        ),
+        OutputMotionConfig(max_reverse_vx=0.20, max_abs_vy=0.20),
+    )
+    internal = compute_apf(
+        make_input(
+            np.array([[1.5, 0.0, 0.2], [0.20, 0.0, 0.2]]),
+            target_mask=np.array([True, False]),
+        ),
+        APFConfig(clearance_recovery_enabled=True),
+        OutputMotionConfig(max_reverse_vx=0.20, max_abs_vy=0.20),
+    )
+
+    assert rear.stop_reason == StopReason.NON_TARGET_HARD_CLEARANCE
+    assert internal.stop_reason == StopReason.NON_TARGET_HARD_CLEARANCE
+
+
+def test_clearance_recovery_does_not_restart_after_its_ten_second_timeout() -> None:
+    """A still-blocked cloud must not open another automatic recovery window."""
+    input_data = make_input(
+        np.array([[1.5, 0.0, 0.2], [0.0, 0.40, 0.2]]),
+        target_mask=np.array([True, False]),
+    )
+    input_data = APFInput(
+        **{**input_data.__dict__, "clearance_recovery_timed_out": True}
+    )
+    result = compute_apf(
+        input_data,
+        APFConfig(
+            non_target_hard_stop_clearance_m=0.20,
+            side_hard_clearance_m=0.20,
+            body_half_width_m=0.225,
+            clearance_recovery_enabled=True,
+        ),
+        OutputMotionConfig(max_reverse_vx=0.20, max_abs_vy=0.20),
+    )
+
+    assert result.stop_reason == StopReason.NON_TARGET_HARD_CLEARANCE
+    assert result.intent.vx == result.intent.vy == result.intent.omega == 0.0
+
+
 def test_target_bearing_is_fused_as_yaw_while_translating() -> None:
     result = compute_apf(
         make_input(

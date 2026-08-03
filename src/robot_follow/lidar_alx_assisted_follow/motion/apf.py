@@ -79,15 +79,37 @@ def compute_apf(
         )
 
     min_clearance = _minimum_body_clearance(obstacles, config)
-    if _has_hard_clearance_violation(obstacles, config):
-        escape_intent = _safe_escape_intent(
+    hard_clearance_violation = _has_hard_clearance_violation(obstacles, config)
+    recovery_exit_not_reached = (
+        input_data.clearance_recovery_active
+        and _has_clearance_below_required_margin(
             obstacles,
-            input_data.sequence,
             config,
-            output_config,
+            config.clearance_recovery_exit_margin_m,
         )
-        if escape_intent is not None:
-            return APFResult(escape_intent, stop_reason=None)
+    )
+    if hard_clearance_violation or recovery_exit_not_reached:
+        if (
+            config.clearance_recovery_enabled
+            and not input_data.clearance_recovery_timed_out
+        ):
+            recovery_intent = _clearance_recovery_intent(
+                obstacles,
+                input_data.sequence,
+                config,
+                output_config,
+            )
+            if recovery_intent is not None:
+                return APFResult(recovery_intent, stop_reason=None)
+        elif hard_clearance_violation:
+            escape_intent = _safe_escape_intent(
+                obstacles,
+                input_data.sequence,
+                config,
+                output_config,
+            )
+            if escape_intent is not None:
+                return APFResult(escape_intent, stop_reason=None)
         return APFResult(
             _zero_intent(input_data.sequence), StopReason.NON_TARGET_HARD_CLEARANCE
         )
@@ -242,6 +264,100 @@ def _safe_escape_intent(
     )
 
 
+def _clearance_recovery_intent(
+    obstacles: np.ndarray,
+    sequence: int,
+    config: APFConfig,
+    output_config: OutputMotionConfig,
+) -> Optional[MotionIntent]:
+    """Return a low-speed, pure point-cloud repulsion escape command.
+
+    This intentionally does not use target attraction, target-corridor
+    centering, candidate search, or rotation.  It applies the ordinary APF
+    inverse-distance shape to distance from the rectangular body envelope,
+    because an emergency body-clearance breach can be well outside the
+    ordinary origin-centred APF influence radius.
+    """
+    if obstacles.size == 0:
+        return None
+
+    obstacle_xy = obstacles[:, :2]
+    all_clearances = np.array(
+        [_compute_body_clearance(point, config) for point in obstacle_xy],
+        dtype=np.float64,
+    )
+    if np.any(all_clearances < config.clearance_recovery_min_body_clearance_m):
+        # A point effectively inside the physical body may indicate contact or
+        # unmasked self-return.  Do not try to move away automatically.
+        return None
+
+    force = np.zeros(2, dtype=np.float64)
+    severity = 0.0
+    for point, clearance in zip(obstacle_xy, all_clearances):
+        # Match ordinary APF behavior: do not let a rear-only return move the
+        # G1 forward toward its ALX target.  Side points at the body origin
+        # remain eligible.
+        if point[0] <= -config.swept_margin_m:
+            continue
+
+        required = _required_hard_clearance(point, config)
+        activation_clearance = required + config.clearance_recovery_exit_margin_m
+        if clearance >= activation_clearance:
+            continue
+
+        body_vector = _body_to_point_vector(point, config)
+        vector_norm = float(np.linalg.norm(body_vector))
+        if vector_norm <= 1e-9:
+            return None
+        direction_away = -body_vector / vector_norm
+
+        # The attraction-free recovery field uses the same inverse-distance
+        # form as ordinary APF, measured from the body surface instead of the
+        # robot origin.  The final command is normalised and speed-limited.
+        force_magnitude = config.repulsion_gain * (
+            1.0 / clearance - 1.0 / activation_clearance
+        ) / (clearance**2)
+        force += force_magnitude * direction_away
+        severity = max(severity, max(0.0, (required - clearance) / required))
+
+    # Do not infer an arbitrary direction when left/right forces cancel.
+    force_norm = float(np.linalg.norm(force))
+    if force_norm <= 1e-9:
+        return None
+
+    # First release never moves forward.  Project before normalising so a
+    # side/rear component remains a full-strength lateral/reverse command.
+    force[0] = min(float(force[0]), 0.0)
+    force_norm = float(np.linalg.norm(force))
+    if force_norm <= 1e-9:
+        return None
+
+    direction = force / force_norm
+    speed = config.clearance_recovery_min_speed_mps + (
+        config.clearance_recovery_max_speed_mps
+        - config.clearance_recovery_min_speed_mps
+    ) * min(severity, 1.0)
+    vx = float(np.clip(direction[0] * speed, -output_config.max_reverse_vx, 0.0))
+    vy = float(
+        np.clip(
+            direction[1] * speed,
+            -output_config.max_abs_vy,
+            output_config.max_abs_vy,
+        )
+    )
+    if math.hypot(vx, vy) <= 1e-9:
+        return None
+
+    return MotionIntent(
+        sequence=sequence,
+        vx=vx,
+        vy=vy,
+        omega=0.0,
+        reason="clearance_recovery",
+        generated_at_s=time.monotonic(),
+    )
+
+
 def _safe_target_retreat_intent(
     target_xy: np.ndarray,
     obstacles: np.ndarray,
@@ -356,6 +472,16 @@ def _body_clearance_components(
     return dx, dy
 
 
+def _body_to_point_vector(point_xy: np.ndarray, config: APFConfig) -> np.ndarray:
+    """Return the vector from the closest rectangular body point to a point."""
+    closest_body_point = np.clip(
+        point_xy,
+        [-config.body_half_length_m, -config.body_half_width_m],
+        [config.body_half_length_m, config.body_half_width_m],
+    )
+    return np.asarray(point_xy, dtype=np.float64) - closest_body_point
+
+
 def _required_hard_clearance(point_xy: np.ndarray, config: APFConfig) -> float:
     """Use the side clearance only when the point is predominantly lateral."""
     dx, dy = _body_clearance_components(point_xy, config)
@@ -374,6 +500,19 @@ def _has_hard_clearance_violation(obstacles: np.ndarray, config: APFConfig) -> b
     return any(
         _compute_body_clearance(point[:2], config)
         < _required_hard_clearance(point[:2], config) - comparison_tolerance_m
+        for point in obstacles
+    )
+
+
+def _has_clearance_below_required_margin(
+    obstacles: np.ndarray,
+    config: APFConfig,
+    margin_m: float,
+) -> bool:
+    """Return whether recovery hysteresis still requires pure repulsion."""
+    return any(
+        _compute_body_clearance(point[:2], config)
+        < _required_hard_clearance(point[:2], config) + margin_m
         for point in obstacles
     )
 

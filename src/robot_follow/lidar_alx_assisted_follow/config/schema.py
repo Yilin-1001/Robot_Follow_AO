@@ -403,6 +403,15 @@ class APFConfig:
     escape_probe_distance_m: float = 0.08
     escape_max_duration_s: float = 1.0
     escape_min_clearance_gain_m: float = 0.02
+    # Optional replacement for the legacy straight reverse escape.  This
+    # mode removes target attraction and moves only along the current cloud's
+    # body-clearance repulsion direction.
+    clearance_recovery_enabled: bool = False
+    clearance_recovery_min_speed_mps: float = 0.10
+    clearance_recovery_max_speed_mps: float = 0.15
+    clearance_recovery_max_duration_s: float = 10.0
+    clearance_recovery_exit_margin_m: float = 0.02
+    clearance_recovery_min_body_clearance_m: float = 0.03
     candidate_angles_deg: Tuple[float, ...] = (0, 30, -30, 60, -60, 90, -90)
     turn_in_place_bearing_deg: float = 35.0
     omega_gain: float = 0.80
@@ -478,6 +487,41 @@ class APFConfig:
         _validate_non_negative(
             self.escape_min_clearance_gain_m,
             "apf.escape_min_clearance_gain_m",
+        )
+        if not isinstance(self.clearance_recovery_enabled, bool):
+            raise ValueError("apf.clearance_recovery_enabled must be a boolean")
+        if self.automatic_escape_enabled and self.clearance_recovery_enabled:
+            raise ValueError(
+                "apf.automatic_escape_enabled and "
+                "apf.clearance_recovery_enabled cannot both be true"
+            )
+        _validate_positive(
+            self.clearance_recovery_min_speed_mps,
+            "apf.clearance_recovery_min_speed_mps",
+        )
+        _validate_positive(
+            self.clearance_recovery_max_speed_mps,
+            "apf.clearance_recovery_max_speed_mps",
+        )
+        if (
+            self.clearance_recovery_min_speed_mps
+            > self.clearance_recovery_max_speed_mps
+        ):
+            raise ValueError(
+                "apf.clearance_recovery_min_speed_mps must be <= "
+                "apf.clearance_recovery_max_speed_mps"
+            )
+        _validate_positive(
+            self.clearance_recovery_max_duration_s,
+            "apf.clearance_recovery_max_duration_s",
+        )
+        _validate_non_negative(
+            self.clearance_recovery_exit_margin_m,
+            "apf.clearance_recovery_exit_margin_m",
+        )
+        _validate_positive(
+            self.clearance_recovery_min_body_clearance_m,
+            "apf.clearance_recovery_min_body_clearance_m",
         )
         _validate_non_negative(self.turn_in_place_bearing_deg, "apf.turn_in_place_bearing_deg")
         _validate_non_negative(self.omega_gain, "apf.omega_gain")

@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from robot_follow.lidar_alx_assisted_follow.config.schema import (
+    APFConfig,
     PrototypeConfig,
     RuntimeConfig,
 )
@@ -24,6 +25,7 @@ from robot_follow.lidar_alx_assisted_follow.motion.limiter import CommandSlewRat
 from robot_follow.lidar_alx_assisted_follow.motion.apf import APFResult
 from robot_follow.lidar_alx_assisted_follow.runtime.controller import (
     LidarALXAssistedFollowRuntime,
+    RuntimeState,
 )
 from robot_follow.lidar_alx_assisted_follow.runtime.state import (
     ControlEvent,
@@ -105,6 +107,40 @@ def make_strategy_result(
 def arm_alx_target(runtime: LidarALXAssistedFollowRuntime) -> None:
     """Put a runtime in the Web-authorized direct-ALX following state."""
     runtime._state.follow_enabled = True
+
+
+def test_clearance_recovery_brakes_once_then_times_out_after_configured_window():
+    """The recovery guard sends a brake frame and bounds fresh-cloud motion."""
+    runtime = object.__new__(LidarALXAssistedFollowRuntime)
+    runtime.config = PrototypeConfig(
+        apf=APFConfig(
+            clearance_recovery_enabled=True,
+            clearance_recovery_max_duration_s=10.0,
+        )
+    )
+    runtime._state = RuntimeState()
+    recovery = APFResult(
+        intent=make_motion_intent(
+            sequence=7,
+            vx=0.0,
+            vy=0.10,
+            reason="clearance_recovery",
+        ),
+        stop_reason=None,
+    )
+
+    brake = runtime._guard_clearance_recovery(recovery, sequence=7, now=1.0)
+    assert brake.intent.reason == "clearance_recovery_brake"
+    assert brake.intent.vx == brake.intent.vy == 0.0
+    assert runtime._state.clearance_recovery_active is True
+
+    moving = runtime._guard_clearance_recovery(recovery, sequence=8, now=1.1)
+    assert moving.intent.reason == "clearance_recovery"
+    assert moving.intent.vy == 0.10
+
+    timeout = runtime._guard_clearance_recovery(recovery, sequence=9, now=11.2)
+    assert timeout.intent.reason == "clearance_recovery_timeout"
+    assert timeout.stop_reason == StopReason.NON_TARGET_HARD_CLEARANCE
 
 
 # ============================================================================

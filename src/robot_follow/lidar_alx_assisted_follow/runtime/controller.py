@@ -133,6 +133,14 @@ class RuntimeState:
     escape_armed: bool = False
     escape_started_at_s: Optional[float] = None
 
+    # Clearance recovery uses point-cloud repulsion instead of target
+    # attraction.  Like automatic escape, it first commands one brake frame
+    # and is bounded by a continuous recovery window.
+    clearance_recovery_active: bool = False
+    clearance_recovery_armed: bool = False
+    clearance_recovery_started_at_s: Optional[float] = None
+    clearance_recovery_timed_out: bool = False
+
     # Hysteresis for keeping distance from a nearby ALX target.  This is
     # separate from obstacle escape so a close person does not become an APF
     # obstacle or cause a forward/reverse oscillation.
@@ -300,6 +308,7 @@ class LidarALXAssistedFollowRuntime:
             self._state.follow_enabled = False
             self._state.target_retreat_active = False
             self._state.target_retreat_armed = False
+            self._reset_clearance_recovery()
             self._state.last_start_result = StartResult(
                 state=StartState.IDLE,
                 reason="user_stop",
@@ -338,6 +347,7 @@ class LidarALXAssistedFollowRuntime:
         self._state.follow_enabled = True
         self._state.target_retreat_active = False
         self._state.target_retreat_armed = False
+        self._reset_clearance_recovery()
         self._state.last_start_result = StartResult(
             state=StartState.ACCEPTED,
             reason=None,
@@ -637,10 +647,13 @@ class LidarALXAssistedFollowRuntime:
             sequence=cloud.sequence,
             alx_body_xy=alx_body_xy,
             target_retreat_active=self._state.target_retreat_active,
+            clearance_recovery_active=self._state.clearance_recovery_active,
+            clearance_recovery_timed_out=self._state.clearance_recovery_timed_out,
         )
 
         apf_result = self._avoidance_strategy.compute(apf_input)
         apf_result = self._guard_automatic_escape(apf_result, cloud.sequence, now)
+        apf_result = self._guard_clearance_recovery(apf_result, cloud.sequence, now)
         apf_result = self._guard_target_retreat(apf_result, cloud.sequence, now)
 
         compute_ms = (time.monotonic() - compute_start) * 1000.0
@@ -791,6 +804,64 @@ class LidarALXAssistedFollowRuntime:
                 stop_reason=StopReason.NON_TARGET_HARD_CLEARANCE,
             )
         return apf_result
+
+    def _guard_clearance_recovery(
+        self,
+        apf_result: APFResult,
+        sequence: int,
+        now: float,
+    ) -> APFResult:
+        """Brake before pure point-cloud recovery and bound its duration."""
+        if apf_result.intent.reason != "clearance_recovery":
+            self._state.clearance_recovery_active = False
+            self._state.clearance_recovery_armed = False
+            self._state.clearance_recovery_started_at_s = None
+            if apf_result.stop_reason != StopReason.NON_TARGET_HARD_CLEARANCE:
+                self._state.clearance_recovery_timed_out = False
+            return apf_result
+
+        self._state.clearance_recovery_active = True
+        if not self._state.clearance_recovery_armed:
+            self._state.clearance_recovery_armed = True
+            return APFResult(
+                intent=MotionIntent(
+                    sequence=sequence,
+                    vx=0.0,
+                    vy=0.0,
+                    omega=0.0,
+                    reason="clearance_recovery_brake",
+                    generated_at_s=now,
+                ),
+                stop_reason=None,
+            )
+
+        if self._state.clearance_recovery_started_at_s is None:
+            self._state.clearance_recovery_started_at_s = now
+        elif (
+            now - self._state.clearance_recovery_started_at_s
+            > self.config.apf.clearance_recovery_max_duration_s
+        ):
+            self._state.clearance_recovery_active = False
+            self._state.clearance_recovery_timed_out = True
+            return APFResult(
+                intent=MotionIntent(
+                    sequence=sequence,
+                    vx=0.0,
+                    vy=0.0,
+                    omega=0.0,
+                    reason="clearance_recovery_timeout",
+                    generated_at_s=now,
+                ),
+                stop_reason=StopReason.NON_TARGET_HARD_CLEARANCE,
+            )
+        return apf_result
+
+    def _reset_clearance_recovery(self) -> None:
+        """Clear recovery session state on an explicit follow transition."""
+        self._state.clearance_recovery_active = False
+        self._state.clearance_recovery_armed = False
+        self._state.clearance_recovery_started_at_s = None
+        self._state.clearance_recovery_timed_out = False
 
     def _guard_target_retreat(
         self,
@@ -1089,4 +1160,6 @@ class LidarALXAssistedFollowRuntime:
             return MotionState.TARGET_RETREAT
         if strategy is not None and strategy.apf_requested.reason.startswith("automatic_escape"):
             return MotionState.ESCAPING
+        if strategy is not None and strategy.apf_requested.reason.startswith("clearance_recovery"):
+            return MotionState.CLEARANCE_RECOVERY
         return MotionState.FOLLOWING

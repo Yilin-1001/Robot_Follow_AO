@@ -28,6 +28,8 @@ class AvoidanceInput:
     sequence: int
     alx_body_xy: Optional[np.ndarray] = None
     target_retreat_active: bool = False
+    clearance_recovery_active: bool = False
+    clearance_recovery_timed_out: bool = False
     confidence: object | None = None
 
 

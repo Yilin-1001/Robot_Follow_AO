@@ -336,7 +336,11 @@ lidar_alx_assisted_follow:
         assert config.calibration.x_m == 0.10
         assert config.calibration.lidar_height_m == 1.00
         assert config.apf.automatic_target_retreat_enabled is False
-        assert config.apf.automatic_escape_enabled is True
+        assert config.apf.automatic_escape_enabled is False
+        assert config.apf.clearance_recovery_enabled is True
+        assert config.apf.clearance_recovery_min_speed_mps == 0.10
+        assert config.apf.clearance_recovery_max_speed_mps == 0.15
+        assert config.apf.clearance_recovery_max_duration_s == 10.0
 
     def test_unimplemented_avoidance_mode_is_rejected(self, tmp_path: Path) -> None:
         """A future planner cannot be selected before it has a safe implementation."""
