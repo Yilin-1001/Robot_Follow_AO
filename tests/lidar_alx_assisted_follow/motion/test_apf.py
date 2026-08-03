@@ -398,8 +398,8 @@ def test_clearance_recovery_continues_until_exit_margin_is_clear() -> None:
     assert result.intent.reason == "clearance_recovery"
 
 
-def test_clearance_recovery_does_not_move_for_rear_only_or_body_internal_points() -> None:
-    """First release never moves forward or reacts to a point inside the body."""
+def test_clearance_recovery_allows_forward_only_when_explicitly_enabled() -> None:
+    """A rear breach can produce forward recovery only for opted-in profiles."""
     rear = compute_apf(
         make_input(
             np.array([[1.5, 0.0, 0.2], [-0.49, 0.0, 0.2]]),
@@ -411,6 +411,19 @@ def test_clearance_recovery_does_not_move_for_rear_only_or_body_internal_points(
         ),
         OutputMotionConfig(max_reverse_vx=0.20, max_abs_vy=0.20),
     )
+
+    forward_rear = compute_apf(
+        make_input(
+            np.array([[1.5, 0.0, 0.2], [-0.49, 0.0, 0.2]]),
+            target_mask=np.array([True, False]),
+        ),
+        APFConfig(
+            non_target_hard_stop_clearance_m=0.20,
+            clearance_recovery_enabled=True,
+            clearance_recovery_allow_forward=True,
+        ),
+        OutputMotionConfig(max_vx=0.20, max_reverse_vx=0.20, max_abs_vy=0.20),
+    )
     internal = compute_apf(
         make_input(
             np.array([[1.5, 0.0, 0.2], [0.20, 0.0, 0.2]]),
@@ -421,6 +434,10 @@ def test_clearance_recovery_does_not_move_for_rear_only_or_body_internal_points(
     )
 
     assert rear.stop_reason == StopReason.NON_TARGET_HARD_CLEARANCE
+    assert forward_rear.stop_reason is None
+    assert forward_rear.intent.reason == "clearance_recovery"
+    assert forward_rear.intent.vx > 0.0
+    assert forward_rear.intent.vy == 0.0
     assert internal.stop_reason == StopReason.NON_TARGET_HARD_CLEARANCE
 
 

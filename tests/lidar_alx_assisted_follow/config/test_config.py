@@ -312,17 +312,20 @@ lidar_alx_assisted_follow:
         assert config is not None
         assert config.avoidance.mode == "apf"
 
-    def test_jie_tf_ground_profile_uses_gravity_aligned_body_to_base_link_transform(self) -> None:
-        """The TF ground profile must use the rosbag-calibrated FRD-to-FLU transform."""
+    def test_production_profile_uses_gravity_aligned_body_to_base_link_transform(self) -> None:
+        """The production profile must use the rosbag-calibrated FRD-to-FLU transform."""
         from robot_follow.lidar_alx_assisted_follow.config import load_prototype_config
 
         repository_root = Path(__file__).parents[3]
         config = load_prototype_config(
             repository_root
-            / "configs/jetson_g1_lidar_alx_assisted_follow_jie_reference_tf_ground.yaml"
+            / "configs/jetson_g1_lidar_alx_assisted_follow_production.yaml"
         )
 
         assert config.output.mode == "real"
+        assert config.g1.max_vx == 1.0
+        assert config.g1.max_abs_vy == 1.0
+        assert config.g1.max_abs_omega == 1.0
         assert config.alx_ros.frame_id == "base_link"
         assert config.sensors.expected_frame_id == "body"
         assert config.sensors.output_frame_id == "base_link"
@@ -335,12 +338,35 @@ lidar_alx_assisted_follow:
         assert "static_transform_publisher" in config.sensors.static_tf_start_command
         assert config.calibration.x_m == 0.10
         assert config.calibration.lidar_height_m == 1.00
+        assert config.target.radial_min_m == 0.0
+        assert config.target.web_pick_radius_m == 0.30
+        assert config.target.self_x_min_m == -0.35
+        assert config.target.self_x_max_m == 0.15
+        assert config.target.self_abs_y_max_m == 0.15
+        assert config.target.physical_height_min_m == 0.10
+        assert config.apf.target_desired_distance_m == 0.40
+        assert config.apf.target_stop_distance_m == 0.10
+        assert config.apf.non_target_influence_m == 0.30
+        assert config.apf.non_target_hard_stop_clearance_m == 0.20
+        assert config.apf.side_hard_clearance_m == 0.20
+        assert config.apf.lateral_avoidance_half_width_m == 0.175
+        assert config.apf.attraction_gain == 0.50
+        assert config.apf.corridor_gain == 1.00
+        assert config.apf.repulsion_gain == 0.012
+        assert config.apf.repulsion_cap == 0.80
+        assert config.apf.slowdown_clearance_m == 0.30
+        assert config.apf.omega_gain == 1.00
         assert config.apf.automatic_target_retreat_enabled is False
         assert config.apf.automatic_escape_enabled is False
         assert config.apf.clearance_recovery_enabled is True
-        assert config.apf.clearance_recovery_min_speed_mps == 0.10
-        assert config.apf.clearance_recovery_max_speed_mps == 0.15
+        assert config.apf.clearance_recovery_allow_forward is True
+        assert config.apf.clearance_recovery_min_speed_mps == 0.50
+        assert config.apf.clearance_recovery_max_speed_mps == 0.80
         assert config.apf.clearance_recovery_max_duration_s == 10.0
+        assert config.output_motion.max_vx == 1.0
+        assert config.output_motion.max_reverse_vx == 1.0
+        assert config.output_motion.max_abs_vy == 1.0
+        assert config.output_motion.max_abs_omega == 1.0
 
     def test_unimplemented_avoidance_mode_is_rejected(self, tmp_path: Path) -> None:
         """A future planner cannot be selected before it has a safe implementation."""

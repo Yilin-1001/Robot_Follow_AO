@@ -412,6 +412,9 @@ class APFConfig:
     clearance_recovery_max_duration_s: float = 10.0
     clearance_recovery_exit_margin_m: float = 0.02
     clearance_recovery_min_body_clearance_m: float = 0.03
+    # Keep the legacy recovery direction conservative unless a profile
+    # explicitly permits forward motion away from a rear hard-clearance point.
+    clearance_recovery_allow_forward: bool = False
     candidate_angles_deg: Tuple[float, ...] = (0, 30, -30, 60, -60, 90, -90)
     turn_in_place_bearing_deg: float = 35.0
     omega_gain: float = 0.80
@@ -490,6 +493,10 @@ class APFConfig:
         )
         if not isinstance(self.clearance_recovery_enabled, bool):
             raise ValueError("apf.clearance_recovery_enabled must be a boolean")
+        if not isinstance(self.clearance_recovery_allow_forward, bool):
+            raise ValueError(
+                "apf.clearance_recovery_allow_forward must be a boolean"
+            )
         if self.automatic_escape_enabled and self.clearance_recovery_enabled:
             raise ValueError(
                 "apf.automatic_escape_enabled and "

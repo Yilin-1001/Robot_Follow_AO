@@ -1,0 +1,115 @@
+# 正式现场配置：G1 + MID-360 + ALX 跟随，基于已验证的 Jie reference 参数。
+#
+# 本文件已内联原 jie_reference、jie_reference_real 与 ground 三层的所有
+# Jie 覆盖参数，并且只继承通用的 G1 + MID-360 基础配置。部署时仅使用
+# 本文件作为 Jie 正式运行 profile，不再依赖另外两个 Jie 参数文件。
+# 刚体变换来源：Robot_Follow_Astar/configs/hardware/g1_mid360_alx.yaml。
+# body 是 FAST-LIO 的 MID-360 IMU 坐标系（FRD）；base_link 是 G1 控制
+# 坐标系（FLU），位于 body 下方 0.25 m。点云会先在进程内转换到
+# base_link，再进行 0.10 m 地面高度过滤；相同变换也发布到 /tf_static。
+extends: jetson_g1_lidar_alx_assisted_follow.yaml
+
+lidar_alx_assisted_follow:
+  g1:
+    # Jie 参考速度上限；G1 bridge 与 output_motion 会继续做最终限幅。
+    max_vx: 1.0
+    max_abs_vy: 1.0
+    max_abs_omega: 1.0
+
+  output:
+    # 正式 profile 使用真实 G1 输出；CLI 仍必须显式传入 --confirm-real-g1。
+    mode: real
+
+  alx_ros:
+    # ALX 位置与变换后的点云必须在同一坐标系，否则会触发 alx_stale。
+    frame_id: base_link
+
+  sensors:
+    # body (FRD) -> base_link (FLU) 的正式安装外参。运行时对每帧点云
+    # 应用该 RPY + 平移；修改这些值必须重新完成静态标定与现场验证。
+    output_frame_id: base_link
+    apply_body_to_output_transform: true
+    # 来自 2026-07-31 静止 MID-360 rosbag：使 IMU 重力方向对齐 base_link
+    # 的 +Z，从而令地面物理高度为 0 m。
+    body_to_output_roll_deg: -178.081392
+    body_to_output_pitch_deg: 32.651169
+    body_to_output_yaw_deg: 1.035408
+    body_to_output_x_m: 0.0
+    body_to_output_y_m: 0.0
+    body_to_output_z_m: 0.25
+    # 完整 RPY 已处理 FRD 与 FLU 的轴向差异，禁止再对 Y 轴额外取反。
+    cloud_y_sign: 1
+    static_tf_start_command: >-
+      ros2 run tf2_ros static_transform_publisher
+      --x 0.0 --y 0.0 --z 0.25
+      --roll -3.108106620964 --pitch 0.569870397122 --yaw 0.018071270809
+      --frame-id body --child-frame-id base_link
+
+  calibration:
+    # 正式安装尺寸：base_link 离地 1.00 m，ALX 接收器位于其前方 0.10 m。
+    # 该高度用于将已转换点云的 Z 值换算为相对地面的物理高度。
+    x_m: 0.10
+    y_m: 0.0
+    lidar_height_m: 1.00
+
+  target:
+    # Jie 不使用全局最小量程；人体附近 0.30 m 点云不作为非目标障碍物。
+    radial_min_m: 0.0
+    web_pick_radius_m: 0.30
+    # Jie 参考的机身排除框：x ∈ (-0.35, 0.15)，|y| < 0.15 m。
+    self_x_min_m: -0.35
+    self_x_max_m: 0.15
+    self_abs_y_max_m: 0.15
+    # 仅保留离地至少 10 cm 的点；低于该值的地面点不参与避障，也不显示
+    # 在 Web 点云中。提高此值会忽略更低的障碍物。
+    physical_height_min_m: 0.10
+
+  apf:
+    # Jie 跟随距离与当前控制器必需的近距离停止门限。
+    target_desired_distance_m: 0.40
+    target_stop_distance_m: 0.10
+    # Jie 硬净空门限：以本项目的 G1 圆角矩形机身模型计算，而非点到原点。
+    non_target_hard_stop_clearance_m: 0.20
+    side_hard_clearance_m: 0.20
+    # Jie RECTANGLE_WIDTH = 0.35 m，对应目标走廊半宽 0.175 m。
+    lateral_avoidance_half_width_m: 0.175
+    # 目标吸引、走廊纠偏与角速度的 Jie 参考增益。
+    attraction_gain: 0.50
+    corridor_gain: 1.00
+    omega_gain: 1.00
+
+    # 普通跟随 APF：只让 0.30 m 内的非目标障碍参与横向/后向排斥，避免
+    # 窄走廊两侧点云长期同时施力而左右抖动。
+    non_target_influence_m: 0.3
+    # 单点排斥增益；增大可使近处避障更积极，但会增加窄通道横摆。
+    repulsion_gain: 0.012
+    # 全部普通障碍点排斥向量合速度上限（m/s），不是单轴速度上限。
+    repulsion_cap: 0.8
+    # 净空小于 0.30 m 时，先降低前向速度；硬净空阈值仍继承自基准配置。
+    slowdown_clearance_m: 0.3
+
+    # Jie 未启用目标过近自动退让；此正式 profile 也保持关闭。
+    automatic_target_retreat_enabled: false
+    # blocked / no-clearance 脱困：关闭旧版直线后退，改为仅由最新点云产生
+    # 的机身净空排斥。进入时先刹停一帧；不使用目标吸引力或旋转。
+    automatic_escape_enabled: false
+    clearance_recovery_enabled: true
+    # 后方 hard-clearance 可沿点云排斥方向向前脱困；仍受 output_motion.max_vx
+    # 和每帧最新点云约束，不使用目标吸引力。
+    clearance_recovery_allow_forward: true
+    # 脱困合速度按侵入严重程度在 0.50～0.80 m/s 间动态取值；总时长不超过
+    # 10 s，超时后保持停止，需人工重新 Start Follow。
+    clearance_recovery_min_speed_mps: 0.50
+    clearance_recovery_max_speed_mps: 0.80
+    clearance_recovery_max_duration_s: 10.0
+    # 障碍物净空超过硬停阈值再额外留出 0.02 m，才退出脱困，防止临界抖动。
+    clearance_recovery_exit_margin_m: 0.02
+    # 任一点到机身外形的净空低于 0.03 m 时禁止脱困移动，直接保持停止。
+    clearance_recovery_min_body_clearance_m: 0.03
+
+  output_motion:
+    # Jie 参考输出上限；APF 请求速度在此之前已经过自身安全逻辑处理。
+    max_vx: 1.0
+    max_reverse_vx: 1.0
+    max_abs_vy: 1.0
+    max_abs_omega: 1.0

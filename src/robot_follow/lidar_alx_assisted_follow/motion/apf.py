@@ -276,7 +276,8 @@ def _clearance_recovery_intent(
     centering, candidate search, or rotation.  It applies the ordinary APF
     inverse-distance shape to distance from the rectangular body envelope,
     because an emergency body-clearance breach can be well outside the
-    ordinary origin-centred APF influence radius.
+    ordinary origin-centred APF influence radius.  Profiles may explicitly
+    allow a rear breach to produce forward recovery motion.
     """
     if obstacles.size == 0:
         return None
@@ -294,10 +295,13 @@ def _clearance_recovery_intent(
     force = np.zeros(2, dtype=np.float64)
     severity = 0.0
     for point, clearance in zip(obstacle_xy, all_clearances):
-        # Match ordinary APF behavior: do not let a rear-only return move the
-        # G1 forward toward its ALX target.  Side points at the body origin
-        # remain eligible.
-        if point[0] <= -config.swept_margin_m:
+        # Legacy profiles never let rear-only returns generate forward motion.
+        # A profile that explicitly permits it must include those points so
+        # the recovery vector points away from the rear obstacle.
+        if (
+            not config.clearance_recovery_allow_forward
+            and point[0] <= -config.swept_margin_m
+        ):
             continue
 
         required = _required_hard_clearance(point, config)
@@ -325,9 +329,10 @@ def _clearance_recovery_intent(
     if force_norm <= 1e-9:
         return None
 
-    # First release never moves forward.  Project before normalising so a
-    # side/rear component remains a full-strength lateral/reverse command.
-    force[0] = min(float(force[0]), 0.0)
+    # Preserve the legacy no-forward behavior unless the profile explicitly
+    # opts in to forward recovery from a rear hard-clearance breach.
+    if not config.clearance_recovery_allow_forward:
+        force[0] = min(float(force[0]), 0.0)
     force_norm = float(np.linalg.norm(force))
     if force_norm <= 1e-9:
         return None
@@ -337,7 +342,17 @@ def _clearance_recovery_intent(
         config.clearance_recovery_max_speed_mps
         - config.clearance_recovery_min_speed_mps
     ) * min(severity, 1.0)
-    vx = float(np.clip(direction[0] * speed, -output_config.max_reverse_vx, 0.0))
+    vx = float(
+        np.clip(
+            direction[0] * speed,
+            -output_config.max_reverse_vx,
+            (
+                output_config.max_vx
+                if config.clearance_recovery_allow_forward
+                else 0.0
+            ),
+        )
+    )
     vy = float(
         np.clip(
             direction[1] * speed,
