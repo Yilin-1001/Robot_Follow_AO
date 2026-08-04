@@ -101,8 +101,8 @@ lidar_alx_assisted_follow:
     target_desired_distance_m: 0.4
     target_stop_distance_m: 0.1
     non_target_influence_m: 0.3
-    non_target_hard_stop_clearance_m: 0.1
-    side_hard_clearance_m: 0.1
+    non_target_hard_stop_clearance_m: 0.12
+    side_hard_clearance_m: 0.12
     slowdown_clearance_m: 0.3
     obstacle_x_min_m: -0.8
     obstacle_x_max_m: 2.5
