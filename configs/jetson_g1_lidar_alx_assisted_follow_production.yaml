@@ -11,10 +11,10 @@ extends: jetson_g1_lidar_alx_assisted_follow.yaml
 
 lidar_alx_assisted_follow:
   g1:
-    # Jie 参考速度上限；G1 bridge 与 output_motion 会继续做最终限幅。
-    max_vx: 1.0
+    # G1 bridge 对 vx 使用对称绝对值限幅；前进、后退均允许至 1.5 m/s。
+    max_vx: 1.5
     max_abs_vy: 1.0
-    max_abs_omega: 1.0
+    max_abs_omega: 1.5
 
   output:
     # 正式 profile 使用真实 G1 输出；CLI 仍必须显式传入 --confirm-real-g1。
@@ -60,9 +60,9 @@ lidar_alx_assisted_follow:
     self_x_min_m: -0.35
     self_x_max_m: 0.15
     self_abs_y_max_m: 0.15
-    # 仅保留离地至少 10 cm 的点；低于该值的地面点不参与避障，也不显示
-    # 在 Web 点云中。提高此值会忽略更低的障碍物。
-    physical_height_min_m: 0.10
+    # 仅保留离地至少 20 cm 的点；滤除当前现场的低高度地面残留/反射。
+    # 低于该值的真实障碍也将被忽略，现场测试需保持低矮障碍物清空。
+    physical_height_min_m: 0.20
 
   apf:
     # Jie 跟随距离与当前控制器必需的近距离停止门限。
@@ -97,10 +97,10 @@ lidar_alx_assisted_follow:
     # 后方 hard-clearance 可沿点云排斥方向向前脱困；仍受 output_motion.max_vx
     # 和每帧最新点云约束，不使用目标吸引力。
     clearance_recovery_allow_forward: true
-    # 脱困合速度按侵入严重程度在 0.50～0.80 m/s 间动态取值；总时长不超过
+    # 脱困合速度按侵入严重程度在 0.30～0.40 m/s 间动态取值；总时长不超过
     # 10 s，超时后保持停止，需人工重新 Start Follow。
-    clearance_recovery_min_speed_mps: 0.50
-    clearance_recovery_max_speed_mps: 0.80
+    clearance_recovery_min_speed_mps: 0.30
+    clearance_recovery_max_speed_mps: 0.40
     clearance_recovery_max_duration_s: 10.0
     # 障碍物净空超过硬停阈值再额外留出 0.02 m，才退出脱困，防止临界抖动。
     clearance_recovery_exit_margin_m: 0.02
@@ -109,7 +109,7 @@ lidar_alx_assisted_follow:
 
   output_motion:
     # Jie 参考输出上限；APF 请求速度在此之前已经过自身安全逻辑处理。
-    max_vx: 1.0
-    max_reverse_vx: 1.0
+    max_vx: 1.5
+    max_reverse_vx: 1.5
     max_abs_vy: 1.0
-    max_abs_omega: 1.0
+    max_abs_omega: 1.5

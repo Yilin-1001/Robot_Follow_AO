@@ -8,7 +8,7 @@ lidar_alx_assisted_follow:
     port: /dev/ttyUSB0                    # 新背包上的 ALX 接收器串口设备。
     baudrate: 115200                       # 串口波特率；须与 ALX 保持一致。
     stale_timeout_s: 0.50                  # 超过此时间未收到 ALX 数据即视为失效。
-    cloud_max_skew_s: 0.08                 # 点云时间戳与匹配 ALX 样本允许的最大时间差。
+    cloud_max_skew_s: 0.15                 # 点云时间戳与匹配 ALX 样本允许的最大时间差；适配实测约 21 Hz 的 ALX 发布节奏。
     min_distance_m: 0.10                   # 接受的 ALX 最小测距。
     max_distance_m: 20.0                   # 接受的 ALX 最大测距。
 
@@ -137,13 +137,22 @@ lidar_alx_assisted_follow:
     escape_min_clearance_gain_m: 0.02       # 脱困结束时最小净空必须增加的余量。
     omega_gain: 0.80                        # 朝向目标的转向增益。
 
-  # 输出指令限幅。关闭斜率限制后，速度指令会直接响应，但仍受以下速度上限和紧急 STOP 保护。
+  # 输出指令限幅。当前关闭斜率限制，速度直接响应；仍受速度上限和紧急 STOP 保护。
   output_motion:
-    slew_rate_limit_enabled: false          # 不使用加减速度平滑，提升跟随、后退和脱困的响应速度。
+    slew_rate_limit_enabled: false          # 关闭加减速度平滑；下方参数保留给后续启用斜率限制时使用。
     max_vx: 0.9                            # 指令前向速度上限；与 g1.max_vx 一致。
     max_reverse_vx: 0.20                   # 自动脱困和近目标后退可使用的后退速度上限。
     max_abs_vy: 0.45                        # 指令横向速度绝对上限；与 g1.max_abs_vy 一致。
     max_abs_omega: 1.0                     # 指令角速度绝对上限；与 g1.max_abs_omega 一致。
+    # 快速跟踪档（约 40 Hz）：0 -> 0.9 m/s 约 0.3 s，0.9 -> 0 m/s 约 0.15 s；
+    # 在保留逐帧变化限制的同时，使 sent speed 能及时追随快速变化的 APF request。
+    # 紧急 STOP 仍绕过这些数值并立即执行。
+    accel_vx: 3.00                          # m/s^2，常规前后速度加速上限。
+    decel_vx: 6.00                          # m/s^2，常规前后速度减速上限。
+    accel_vy: 2.00                          # m/s^2，常规横向速度加速上限。
+    decel_vy: 4.00                          # m/s^2，常规横向速度减速上限。
+    accel_omega: 8.00                       # rad/s^2，常规转向角速度加速上限。
+    decel_omega: 16.00                      # rad/s^2，常规转向角速度减速上限。
 
   # 本地 Web 监控与控制界面参数。
   web:

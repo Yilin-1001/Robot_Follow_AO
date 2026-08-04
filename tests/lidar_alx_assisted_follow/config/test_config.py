@@ -323,9 +323,9 @@ lidar_alx_assisted_follow:
         )
 
         assert config.output.mode == "real"
-        assert config.g1.max_vx == 1.0
+        assert config.g1.max_vx == 1.5
         assert config.g1.max_abs_vy == 1.0
-        assert config.g1.max_abs_omega == 1.0
+        assert config.g1.max_abs_omega == 1.5
         assert config.alx_ros.frame_id == "base_link"
         assert config.sensors.expected_frame_id == "body"
         assert config.sensors.output_frame_id == "base_link"
@@ -343,7 +343,7 @@ lidar_alx_assisted_follow:
         assert config.target.self_x_min_m == -0.35
         assert config.target.self_x_max_m == 0.15
         assert config.target.self_abs_y_max_m == 0.15
-        assert config.target.physical_height_min_m == 0.10
+        assert config.target.physical_height_min_m == 0.20
         assert config.apf.target_desired_distance_m == 0.40
         assert config.apf.target_stop_distance_m == 0.10
         assert config.apf.non_target_influence_m == 0.30
@@ -360,13 +360,13 @@ lidar_alx_assisted_follow:
         assert config.apf.automatic_escape_enabled is False
         assert config.apf.clearance_recovery_enabled is True
         assert config.apf.clearance_recovery_allow_forward is True
-        assert config.apf.clearance_recovery_min_speed_mps == 0.50
-        assert config.apf.clearance_recovery_max_speed_mps == 0.80
+        assert config.apf.clearance_recovery_min_speed_mps == 0.30
+        assert config.apf.clearance_recovery_max_speed_mps == 0.40
         assert config.apf.clearance_recovery_max_duration_s == 10.0
-        assert config.output_motion.max_vx == 1.0
-        assert config.output_motion.max_reverse_vx == 1.0
+        assert config.output_motion.max_vx == 1.5
+        assert config.output_motion.max_reverse_vx == 1.5
         assert config.output_motion.max_abs_vy == 1.0
-        assert config.output_motion.max_abs_omega == 1.0
+        assert config.output_motion.max_abs_omega == 1.5
 
     def test_unimplemented_avoidance_mode_is_rejected(self, tmp_path: Path) -> None:
         """A future planner cannot be selected before it has a safe implementation."""
