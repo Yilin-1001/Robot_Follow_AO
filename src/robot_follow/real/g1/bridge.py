@@ -50,6 +50,11 @@ logger = logging.getLogger(__name__)
 # command_timeout_s) handles the normal refresh case.
 _MOVE_DURATION_S = 1.0
 
+# Repeated stop requests are normal while a safety condition remains active.
+# Keep a few diagnostics for the operator, then silence the identical message
+# until a later successful move arms the bridge for a new stop cycle.
+_MAX_CONSECUTIVE_SUPPRESSED_STOP_LOGS = 3
+
 
 class G1MotionBridge:
     """Converts MotionCommand to Unitree G1 LocoClient calls.
@@ -102,6 +107,7 @@ class G1MotionBridge:
         self._last_stop_attempt_time: float | None = None
         self._last_dispatch_time: float | None = None
         self._last_sent_omega: float | None = None
+        self._suppressed_stop_log_count = 0
 
     @property
     def state(self) -> BridgeState:
@@ -230,6 +236,7 @@ class G1MotionBridge:
                 return
             self._clear_timeout_state()
             self._state = BridgeState.ACTIVE
+            self._suppressed_stop_log_count = 0
             self._last_dispatch_time = self._clock()
             logger.debug(f"G1 move: vx={vx:.3f} omega={omega:.3f}")
         except Exception as e:
@@ -258,7 +265,9 @@ class G1MotionBridge:
         # transitions the state back to ACTIVE, so the next stop remains
         # immediate.
         if self._state == BridgeState.STOPPED:
-            logger.debug("G1 stop suppressed: bridge is already stopped")
+            if self._suppressed_stop_log_count < _MAX_CONSECUTIVE_SUPPRESSED_STOP_LOGS:
+                logger.debug("G1 stop suppressed: bridge is already stopped")
+                self._suppressed_stop_log_count += 1
             return
         now = self._clock()
         if not self._should_attempt_stop(now):

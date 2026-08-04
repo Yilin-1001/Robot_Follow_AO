@@ -21,7 +21,7 @@ lidar_alx_assisted_follow:
     wristband_publish_hz: 10.0              # 手环状态发布频率。
     wristband_timeout_s: 0.50               # 手环状态失效超时。
     kalman_process_noise: 0.05              # ALX Kalman 过程噪声；大则跟随变化更快。
-    kalman_measurement_noise: 0.25          # ALX Kalman 测量噪声；大则结果更平滑。
+    kalman_measurement_noise: 0.40          # ALX Kalman 测量噪声；大则结果更平滑。
     kalman_max_interval_s: 0.20             # 超过此帧间隔时重置/限制滤波预测。
 
   # FAST-LIO 点云输入及 Livox/FAST-LIO 生命周期命令。

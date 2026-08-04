@@ -71,8 +71,8 @@ lidar_alx_assisted_follow:
     # Jie 硬净空门限：以本项目的 G1 圆角矩形机身模型计算，而非点到原点。
     non_target_hard_stop_clearance_m: 0.20
     side_hard_clearance_m: 0.20
-    # Jie RECTANGLE_WIDTH = 0.35 m，对应目标走廊半宽 0.175 m。
-    lateral_avoidance_half_width_m: 0.175
+    # 目标走廊总宽 0.45 m，对应目标连线两侧各 0.225 m。
+    lateral_avoidance_half_width_m: 0.225
     # 目标吸引、走廊纠偏与角速度的 Jie 参考增益。
     attraction_gain: 0.50
     corridor_gain: 1.00

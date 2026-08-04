@@ -349,7 +349,7 @@ lidar_alx_assisted_follow:
         assert config.apf.non_target_influence_m == 0.30
         assert config.apf.non_target_hard_stop_clearance_m == 0.20
         assert config.apf.side_hard_clearance_m == 0.20
-        assert config.apf.lateral_avoidance_half_width_m == 0.175
+        assert config.apf.lateral_avoidance_half_width_m == 0.225
         assert config.apf.attraction_gain == 0.50
         assert config.apf.corridor_gain == 1.00
         assert config.apf.repulsion_gain == 0.012

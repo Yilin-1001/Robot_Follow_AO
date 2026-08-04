@@ -15,6 +15,7 @@ kept on the fake only so it stays a faithful stand-in for the real SDK; a
 dedicated test locks the contract that the bridge never invokes them.
 """
 
+import logging
 import subprocess
 import sys
 import textwrap
@@ -330,6 +331,35 @@ def test_repeated_successful_stops_send_only_one_zero_velocity():
 
     assert fake.set_velocity_calls == [_ZERO_VEL_CALL]
     assert bridge.state == BridgeState.STOPPED
+
+
+def test_repeated_suppressed_stops_log_only_three_times_and_reset_after_move(caplog):
+    """Repeated safety-loop stops must not continuously flood the terminal."""
+    fake = FakeLocoClient()
+    bridge = G1MotionBridge("eth0", fake_client=fake)
+    bridge.init()
+    caplog.set_level(logging.DEBUG, logger="robot_follow.real.g1.bridge")
+
+    bridge.stop("serial_error")
+    for _ in range(5):
+        bridge.stop("serial_error")
+
+    suppressed = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "G1 stop suppressed: bridge is already stopped"
+    ]
+    assert len(suppressed) == 3
+
+    bridge.move(_move())
+    bridge.stop("serial_error")
+    bridge.stop("serial_error")
+    suppressed_after_move = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "G1 stop suppressed: bridge is already stopped"
+    ]
+    assert len(suppressed_after_move) == 4
 
 
 def test_stop_set_velocity_return_code_nonzero_triggers_error():
