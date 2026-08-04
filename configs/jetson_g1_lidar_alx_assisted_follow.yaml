@@ -109,8 +109,8 @@ lidar_alx_assisted_follow:
     target_desired_distance_m: 1.00         # 与 ALX 目标保持的期望距离。
     target_stop_distance_m: 0.80            # 小于该距离时停止靠近目标。
     non_target_influence_m: 1.80            # 非目标障碍开始产生连续规避作用的距离。
-    non_target_hard_stop_clearance_m: 0.25  # 侵入机身紧急净空时硬停止。
-    side_hard_clearance_m: 0.20             # 主要来自两侧墙面的侧向硬净空；正前/正后仍使用 0.25 m。
+    non_target_hard_stop_clearance_m: 0.10  # 侵入机身紧急净空时硬停止。
+    side_hard_clearance_m: 0.10             # 侧向硬净空；与前后硬净空保持一致。
     slowdown_clearance_m: 0.60              # 障碍靠近时开始减速的净空距离。
     obstacle_x_min_m: -0.80                 # APF 处理障碍的后方边界，保留后退路径验证空间。
     obstacle_x_max_m: 2.50                  # APF 处理障碍的前方边界，窗口外点不参与逐点避障计算。

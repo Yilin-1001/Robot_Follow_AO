@@ -78,6 +78,33 @@ def test_hard_stop_still_publishes_preprocessed_cloud_for_web():
         "offset_m": config.calibration.lidar_height_m,
     }
     assert status["lateral_avoidance_zone"] is None
+    assert status["alx_retreat_zone"] == {
+        "enabled": config.apf.automatic_target_retreat_enabled,
+        "start_distance_m": config.apf.target_retreat_start_distance_m,
+        "exit_distance_m": config.apf.target_retreat_exit_distance_m,
+        "active": False,
+    }
+    assert status["clearance_zone"] == {
+        "body_half_length_m": config.apf.body_half_length_m,
+        "body_half_width_m": config.apf.body_half_width_m,
+        "front_rear_hard_clearance_m": config.apf.non_target_hard_stop_clearance_m,
+        "side_hard_clearance_m": config.apf.side_hard_clearance_m,
+        "slowdown_clearance_m": config.apf.slowdown_clearance_m,
+        "obstacle_x_min_m": config.apf.obstacle_x_min_m,
+        "obstacle_x_max_m": config.apf.obstacle_x_max_m,
+        "obstacle_abs_y_max_m": config.apf.obstacle_abs_y_max_m,
+        "automatic_escape": {
+            "enabled": config.apf.automatic_escape_enabled,
+            "probe_distance_m": config.apf.escape_probe_distance_m,
+            "max_duration_s": config.apf.escape_max_duration_s,
+        },
+        "clearance_recovery": {
+            "enabled": config.apf.clearance_recovery_enabled,
+            "active": False,
+            "exit_margin_m": config.apf.clearance_recovery_exit_margin_m,
+            "max_duration_s": config.apf.clearance_recovery_max_duration_s,
+        },
+    }
     assert status["stop"]["reason"] == "user_stop"
 
 

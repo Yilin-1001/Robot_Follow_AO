@@ -1080,6 +1080,39 @@ class LidarALXAssistedFollowRuntime:
                     if alx_xy is not None
                     else None
                 ),
+                # Keep the operator display tied to the values the running
+                # controller is actually using.  This is status-only: safety
+                # parameters still come exclusively from the validated YAML
+                # configuration loaded when the service starts.
+                "alx_retreat_zone": {
+                    "enabled": self.config.apf.automatic_target_retreat_enabled,
+                    "start_distance_m": self.config.apf.target_retreat_start_distance_m,
+                    "exit_distance_m": self.config.apf.target_retreat_exit_distance_m,
+                    "active": self._state.target_retreat_active,
+                },
+                "clearance_zone": {
+                    "body_half_length_m": self.config.apf.body_half_length_m,
+                    "body_half_width_m": self.config.apf.body_half_width_m,
+                    "front_rear_hard_clearance_m": (
+                        self.config.apf.non_target_hard_stop_clearance_m
+                    ),
+                    "side_hard_clearance_m": self.config.apf.side_hard_clearance_m,
+                    "slowdown_clearance_m": self.config.apf.slowdown_clearance_m,
+                    "obstacle_x_min_m": self.config.apf.obstacle_x_min_m,
+                    "obstacle_x_max_m": self.config.apf.obstacle_x_max_m,
+                    "obstacle_abs_y_max_m": self.config.apf.obstacle_abs_y_max_m,
+                    "automatic_escape": {
+                        "enabled": self.config.apf.automatic_escape_enabled,
+                        "probe_distance_m": self.config.apf.escape_probe_distance_m,
+                        "max_duration_s": self.config.apf.escape_max_duration_s,
+                    },
+                    "clearance_recovery": {
+                        "enabled": self.config.apf.clearance_recovery_enabled,
+                        "active": self._state.clearance_recovery_active,
+                        "exit_margin_m": self.config.apf.clearance_recovery_exit_margin_m,
+                        "max_duration_s": self.config.apf.clearance_recovery_max_duration_s,
+                    },
+                },
                 "alx": {
                     "body_xy": alx_xy.tolist() if alx_xy is not None else None,
                     "age_s": self._state.last_alx_age_ms / 1000.0,

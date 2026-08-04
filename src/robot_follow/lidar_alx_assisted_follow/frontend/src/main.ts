@@ -10,6 +10,26 @@ interface Command {
   reason: string;
 }
 
+interface ALXRetreatZone {
+  enabled: boolean;
+  start_distance_m: number;
+  exit_distance_m: number;
+  active: boolean;
+}
+
+interface ClearanceZone {
+  body_half_length_m: number;
+  body_half_width_m: number;
+  front_rear_hard_clearance_m: number;
+  side_hard_clearance_m: number;
+  slowdown_clearance_m: number;
+  obstacle_x_min_m: number;
+  obstacle_x_max_m: number;
+  obstacle_abs_y_max_m: number;
+  automatic_escape: { enabled: boolean; probe_distance_m: number; max_duration_s: number };
+  clearance_recovery: { enabled: boolean; active: boolean; exit_margin_m: number; max_duration_s: number };
+}
+
 interface StatusFrame {
   version: number;
   cloud_sequence: number;
@@ -23,6 +43,8 @@ interface StatusFrame {
     end_xy: [number, number];
     half_width_m: number;
   } | null;
+  alx_retreat_zone?: ALXRetreatZone;
+  clearance_zone?: ClearanceZone;
   alx?: {
     body_xy: [number, number] | null;
     age_s: number | null;
@@ -53,6 +75,10 @@ const POINT_COLOR = "#9fdcff";
 const ALX_COLOR = "#3fb950";
 const EXCLUSION_COLOR = "#bc8cff";
 const AVOIDANCE_ZONE_COLOR = "#f0b429";
+const ALX_RETREAT_COLOR = "#ff9f43";
+const HARD_CLEARANCE_COLOR = "#f85149";
+const SLOWDOWN_CLEARANCE_COLOR = "#f0b429";
+const OBSTACLE_WINDOW_COLOR = "#58a6ff";
 const HEIGHT_LEGEND_WIDTH_PX = 104;
 const HEIGHT_LEGEND_HEIGHT_PX = 8;
 const MAX_SCALE = 80;
@@ -191,6 +217,20 @@ class LiDARMonitor {
     this.latestFrame?.points.forEach((point) => include(point[0], point[1]));
     const alx = this.latestFrame?.alx?.body_xy;
     if (alx) include(alx[0], alx[1]);
+    const retreat = this.latestFrame?.alx_retreat_zone;
+    if (retreat?.enabled) {
+      include(retreat.exit_distance_m, retreat.exit_distance_m);
+      include(-retreat.exit_distance_m, -retreat.exit_distance_m);
+    }
+    const clearance = this.latestFrame?.clearance_zone;
+    if (clearance) {
+      include(clearance.obstacle_x_min_m, clearance.obstacle_abs_y_max_m);
+      include(clearance.obstacle_x_max_m, -clearance.obstacle_abs_y_max_m);
+      if (clearance.automatic_escape.enabled) include(
+        -clearance.body_half_length_m - clearance.automatic_escape.probe_distance_m,
+        clearance.body_half_width_m,
+      );
+    }
     this.alxTrail.forEach((point) => include(point.x, point.y));
     const width = Math.max(1, this.canvas.width - VIEWPORT_PADDING_PX * 2);
     const height = Math.max(1, this.canvas.height - VIEWPORT_PADDING_PX * 2);
@@ -208,6 +248,12 @@ class LiDARMonitor {
     this.drawGrid();
     this.drawALXTrail();
     if (this.latestFrame) {
+      if (this.latestFrame.clearance_zone) {
+        this.drawObstacleWindow(this.latestFrame.clearance_zone);
+        this.drawClearanceZones(this.latestFrame.clearance_zone);
+        this.drawEscapeProbe(this.latestFrame.clearance_zone);
+      }
+      if (this.latestFrame.alx_retreat_zone?.enabled) this.drawALXRetreatZone(this.latestFrame.alx_retreat_zone);
       this.drawPoints(this.latestFrame.points, this.latestFrame.point_height_range);
       if (this.latestFrame.lateral_avoidance_zone) this.drawLateralAvoidanceZone(this.latestFrame.lateral_avoidance_zone);
       if (this.latestFrame.target_exclusion) this.drawExclusion(this.latestFrame.target_exclusion);
@@ -273,6 +319,139 @@ class LiDARMonitor {
     const viewport = this.getViewport(); const center = this.toCanvas({ x: exclusion.center_xy[0], y: exclusion.center_xy[1] }, viewport);
     this.ctx.strokeStyle = EXCLUSION_COLOR; this.ctx.lineWidth = 2; this.ctx.setLineDash([5, 4]);
     this.ctx.beginPath(); this.ctx.arc(center.x, center.y, exclusion.radius_m * viewport.scale, 0, 2 * Math.PI); this.ctx.stroke(); this.ctx.setLineDash([]);
+  }
+
+  private drawALXRetreatZone(zone: ALXRetreatZone): void {
+    const viewport = this.getViewport();
+    const center = this.toCanvas({ x: 0, y: 0 }, viewport);
+    this.ctx.save();
+    this.ctx.strokeStyle = ALX_RETREAT_COLOR;
+    this.ctx.lineWidth = zone.active ? 2.5 : 1.5;
+    this.ctx.setLineDash(zone.active ? [] : [6, 4]);
+    this.ctx.beginPath(); this.ctx.arc(center.x, center.y, zone.start_distance_m * viewport.scale, 0, 2 * Math.PI); this.ctx.stroke();
+    this.ctx.globalAlpha = 0.55;
+    this.ctx.beginPath(); this.ctx.arc(center.x, center.y, zone.exit_distance_m * viewport.scale, 0, 2 * Math.PI); this.ctx.stroke();
+    this.ctx.globalAlpha = 1;
+    this.ctx.setLineDash([]);
+    this.ctx.font = "10px monospace";
+    this.ctx.fillStyle = ALX_RETREAT_COLOR;
+    this.ctx.fillText(`ALX RETREAT <${zone.start_distance_m.toFixed(2)} m`, center.x + 8, center.y - zone.start_distance_m * viewport.scale - 6);
+    this.ctx.restore();
+  }
+
+  private drawObstacleWindow(zone: ClearanceZone): void {
+    const viewport = this.getViewport();
+    const corners = [
+      { x: zone.obstacle_x_min_m, y: -zone.obstacle_abs_y_max_m },
+      { x: zone.obstacle_x_max_m, y: -zone.obstacle_abs_y_max_m },
+      { x: zone.obstacle_x_max_m, y: zone.obstacle_abs_y_max_m },
+      { x: zone.obstacle_x_min_m, y: zone.obstacle_abs_y_max_m },
+    ].map((point) => this.toCanvas(point, viewport));
+    this.ctx.save();
+    this.ctx.strokeStyle = OBSTACLE_WINDOW_COLOR;
+    this.ctx.globalAlpha = 0.5;
+    this.ctx.lineWidth = 1;
+    this.ctx.setLineDash([3, 5]);
+    this.ctx.beginPath(); this.ctx.moveTo(corners[0].x, corners[0].y);
+    corners.slice(1).forEach((corner) => this.ctx.lineTo(corner.x, corner.y));
+    this.ctx.closePath(); this.ctx.stroke();
+    this.ctx.setLineDash([]);
+    this.ctx.font = "10px monospace";
+    this.ctx.fillStyle = OBSTACLE_WINDOW_COLOR;
+    this.ctx.fillText("APF WINDOW", corners[0].x + 5, corners[0].y + 13);
+    this.ctx.restore();
+  }
+
+  private drawClearanceZones(zone: ClearanceZone): void {
+    const viewport = this.getViewport();
+    const hardBoundary = this.clearanceBoundary(zone, (dx, dy) => (
+      dy > dx ? zone.side_hard_clearance_m : zone.front_rear_hard_clearance_m
+    ), viewport);
+    const slowdownBoundary = this.clearanceBoundary(zone, () => zone.slowdown_clearance_m, viewport);
+    this.ctx.save();
+    this.drawClosedPath(slowdownBoundary);
+    this.ctx.strokeStyle = SLOWDOWN_CLEARANCE_COLOR;
+    this.ctx.lineWidth = 1;
+    this.ctx.setLineDash([4, 4]);
+    this.ctx.stroke();
+    this.ctx.setLineDash([]);
+    this.drawClosedPath(hardBoundary);
+    this.ctx.fillStyle = "rgba(248, 81, 73, 0.10)";
+    this.ctx.fill();
+    this.ctx.strokeStyle = HARD_CLEARANCE_COLOR;
+    this.ctx.lineWidth = 1.75;
+    this.ctx.stroke();
+    const body = [
+      { x: -zone.body_half_length_m, y: -zone.body_half_width_m },
+      { x: zone.body_half_length_m, y: -zone.body_half_width_m },
+      { x: zone.body_half_length_m, y: zone.body_half_width_m },
+      { x: -zone.body_half_length_m, y: zone.body_half_width_m },
+    ].map((point) => this.toCanvas(point, viewport));
+    this.ctx.fillStyle = "rgba(139, 148, 158, 0.40)";
+    this.ctx.strokeStyle = "#c9d1d9";
+    this.ctx.lineWidth = 1;
+    this.ctx.beginPath(); this.ctx.moveTo(body[0].x, body[0].y);
+    body.slice(1).forEach((corner) => this.ctx.lineTo(corner.x, corner.y));
+    this.ctx.closePath(); this.ctx.fill(); this.ctx.stroke();
+    this.ctx.font = "10px monospace";
+    this.ctx.fillStyle = HARD_CLEARANCE_COLOR;
+    this.ctx.fillText("HARD CLEARANCE", body[1].x + 7, body[1].y - 7);
+    this.ctx.restore();
+  }
+
+  private drawEscapeProbe(zone: ClearanceZone): void {
+    if (!zone.automatic_escape.enabled) return;
+    const viewport = this.getViewport();
+    const startX = -zone.body_half_length_m;
+    const endX = startX - zone.automatic_escape.probe_distance_m;
+    const halfWidth = zone.body_half_width_m;
+    const corners = [
+      { x: startX, y: -halfWidth }, { x: endX, y: -halfWidth },
+      { x: endX, y: halfWidth }, { x: startX, y: halfWidth },
+    ].map((point) => this.toCanvas(point, viewport));
+    this.ctx.save();
+    this.ctx.fillStyle = "rgba(255, 159, 67, 0.10)";
+    this.ctx.strokeStyle = ALX_RETREAT_COLOR;
+    this.ctx.lineWidth = 1.25;
+    this.ctx.setLineDash([5, 3]);
+    this.ctx.beginPath(); this.ctx.moveTo(corners[0].x, corners[0].y);
+    corners.slice(1).forEach((corner) => this.ctx.lineTo(corner.x, corner.y));
+    this.ctx.closePath(); this.ctx.fill(); this.ctx.stroke();
+    this.ctx.setLineDash([]);
+    this.ctx.font = "10px monospace";
+    this.ctx.fillStyle = ALX_RETREAT_COLOR;
+    this.ctx.fillText(`ESCAPE PROBE ${zone.automatic_escape.probe_distance_m.toFixed(2)} m`, corners[1].x + 5, corners[1].y - 6);
+    this.ctx.restore();
+  }
+
+  private clearanceBoundary(
+    zone: ClearanceZone,
+    required: (dx: number, dy: number) => number,
+    viewport: Viewport,
+  ): Point2D[] {
+    const points: Point2D[] = [];
+    const maxRequired = Math.max(zone.front_rear_hard_clearance_m, zone.side_hard_clearance_m, zone.slowdown_clearance_m);
+    const upperBound = Math.hypot(zone.body_half_length_m, zone.body_half_width_m) + maxRequired * 2 + 1;
+    for (let index = 0; index < 96; index += 1) {
+      const angle = (index / 96) * Math.PI * 2;
+      const cos = Math.cos(angle); const sin = Math.sin(angle);
+      let low = 0; let high = upperBound;
+      for (let iteration = 0; iteration < 32; iteration += 1) {
+        const distance = (low + high) / 2;
+        const dx = Math.max(Math.abs(distance * cos) - zone.body_half_length_m, 0);
+        const dy = Math.max(Math.abs(distance * sin) - zone.body_half_width_m, 0);
+        if (Math.hypot(dx, dy) < required(dx, dy)) low = distance; else high = distance;
+      }
+      points.push(this.toCanvas({ x: high * cos, y: high * sin }, viewport));
+    }
+    return points;
+  }
+
+  private drawClosedPath(points: Point2D[]): void {
+    this.ctx.beginPath();
+    this.ctx.moveTo(points[0].x, points[0].y);
+    points.slice(1).forEach((point) => this.ctx.lineTo(point.x, point.y));
+    this.ctx.closePath();
   }
 
   private drawLateralAvoidanceZone(zone: { start_xy: [number, number]; end_xy: [number, number]; half_width_m: number }): void {
