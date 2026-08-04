@@ -323,7 +323,7 @@ lidar_alx_assisted_follow:
         )
 
         assert config.output.mode == "real"
-        assert config.g1.max_vx == 1.5
+        assert config.g1.max_vx == 1.0
         assert config.g1.max_abs_vy == 1.0
         assert config.g1.max_abs_omega == 1.5
         assert config.alx_ros.frame_id == "base_link"
@@ -363,8 +363,8 @@ lidar_alx_assisted_follow:
         assert config.apf.clearance_recovery_min_speed_mps == 0.30
         assert config.apf.clearance_recovery_max_speed_mps == 0.40
         assert config.apf.clearance_recovery_max_duration_s == 10.0
-        assert config.output_motion.max_vx == 1.5
-        assert config.output_motion.max_reverse_vx == 1.5
+        assert config.output_motion.max_vx == 1.0
+        assert config.output_motion.max_reverse_vx == 1.0
         assert config.output_motion.max_abs_vy == 1.0
         assert config.output_motion.max_abs_omega == 1.5
 

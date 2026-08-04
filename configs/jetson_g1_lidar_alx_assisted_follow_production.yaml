@@ -46,7 +46,7 @@ lidar_alx_assisted_follow:
       --frame-id body --child-frame-id base_link
   g1:
     network_interface: enP8p1s0
-    max_vx: 1.5
+    max_vx: 1.0
     max_abs_vy: 1.0
     max_abs_omega: 1.5
     yaw_sign: 1
@@ -137,8 +137,8 @@ lidar_alx_assisted_follow:
     omega_gain: 1.0
   output_motion:
     slew_rate_limit_enabled: false
-    max_vx: 1.5
-    max_reverse_vx: 1.5
+    max_vx: 1.0
+    max_reverse_vx: 1.0
     max_abs_vy: 1.0
     max_abs_omega: 1.5
     accel_vx: 3.0

@@ -80,7 +80,43 @@ source /opt/g1_mid360_ros2_ws/install/setup.bash
 确认实际的 launch 包名、launch 文件和 MID-360 参数文件；本项目不会替你假定
 它们与 Foxy 分支完全相同。当前 Humble 的 `mapping.launch.py` 使用
 `config_path` 与 `config_file` 两个参数；项目启动脚本会从完整路径变量
-`FAST_LIO_CONFIG` 推导这两个参数。设置 `FAST_LIO_WS` 与 `FAST_LIO_CONFIG` 后，运行：
+`FAST_LIO_CONFIG` 推导这两个参数。当前生产启动命令为：
+
+```bash
+cd ~/Robot_Follow_AO
+
+source /opt/ros/humble/setup.bash
+source /home/fk/g1_mid360_ros2_ws/install/setup.bash
+conda activate robot_followao_radar_humble
+
+export ROS_DOMAIN_ID=77
+unset ROS_LOCALHOST_ONLY
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+
+export FAST_LIO_WS=/home/fk/g1_mid360_ros2_ws
+export FAST_LIO_CONFIG="$FAST_LIO_WS/src/FAST_LIO/config/mid360.yaml"
+export FAST_LIO_CONFIG_DIR="$(dirname "$FAST_LIO_CONFIG")"
+export FAST_LIO_CONFIG_FILE="$(basename "$FAST_LIO_CONFIG")"
+
+export CUPY_CACHE_DIR=/tmp/robot-follow-cupy-cache
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+
+test -r "$FAST_LIO_CONFIG" || {
+  echo "FAST-LIO config not found: $FAST_LIO_CONFIG"
+  exit 1
+}
+
+python -m robot_follow.lidar_alx_assisted_follow.cli \
+  configs/jetson_g1_lidar_alx_assisted_follow_production.yaml \
+  --confirm-real-g1 \
+  --allow-provisional-calibration \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --allow-unauthenticated-lan \
+  --log-level DEBUG
+```
+
+启动前也可运行以下只读检查：
 
 ```bash
 scripts/check_humble_backpack.sh
@@ -101,7 +137,7 @@ ros2 topic echo --once /cloud_registered_body
 
 - `g1.network_interface`：G1 所在网卡名；不能假定为 `eth0`。
 - `FAST_LIO_CONFIG`：Humble 工作空间内的真实 MID-360 参数文件。
-- `ROS_DOMAIN_ID`：ROS 图默认用 20；所有 ROS 节点和 FAST-LIO 必须一致。
+- `ROS_DOMAIN_ID`：当前生产 ROS 图使用 77；所有 ROS 节点和 FAST-LIO 必须一致。
 
 ## 4. Unitree DDS 隔离与验证
 
@@ -144,6 +180,6 @@ SDK 初始化验证；必须将 `--net-iface` 设置为实际连接 G1 的网卡
 `systemd/robot-follow-humble.service`。服务使用 `/dev/ttyUSB0` 作为启动前置条件，
 且所有 ROS 环境只由 `scripts/run_humble_lidar_assisted_follow.sh` 建立。
 
-首次系统服务运行必须保持 mock 配置。真实 G1 输出仍需要应用层的
-`--confirm-real-g1` 和 `--allow-provisional-calibration` 双确认，不能通过 systemd
-模板自动开启。
+当前启动脚本默认使用 production 配置，并传入真实 G1 所需的
+`--confirm-real-g1` 与 `--allow-provisional-calibration`。因此，只有在已完成现场
+安全检查并确认隔离局域网后，才能部署或启动该 systemd 服务。
