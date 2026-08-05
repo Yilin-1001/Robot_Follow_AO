@@ -38,6 +38,10 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
+# Frontend dependencies and development caches
+node_modules/
+.vite/
+
 # Runtime outputs
 logs/*
 !logs/.gitkeep
